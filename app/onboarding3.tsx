@@ -6,12 +6,13 @@ import { useRouter } from 'expo-router';
 import React from 'react';
 import {
     Dimensions,
+    Image,
     SafeAreaView,
     StatusBar,
     StyleSheet,
     Text,
     TouchableOpacity,
-    View,
+    View
 } from 'react-native';
 
 const { width, height } = Dimensions.get('window');
@@ -20,10 +21,7 @@ const Onboarding3: React.FC = () => {
   const router = useRouter();
 
   const handleNext = () => {
-    // If there is a next onboarding screen (e.g., onboarding3), navigate there.
-    // If this truly is the last page, you might navigate to '/home' or main app.
-    // Example: router.push('/home');
-    // Here, assuming you have onboarding3:
+    // Navigate to the signup screen
     router.push('/signupscreen');
   };
 
@@ -52,23 +50,13 @@ const Onboarding3: React.FC = () => {
 
       {/* Main Content */}
       <View style={styles.content}>
-        {/* Placeholder Image Area */}
+        {/* Image Area */}
         <View style={styles.imageContainer}>
-          <View style={styles.placeholderImage}>
-            <View style={styles.checkerboard}>
-              {Array.from({ length: 100 }).map((_, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.checkerSquare,
-                    (Math.floor(index / 10) + index) % 2 === 0
-                      ? styles.lightSquare
-                      : styles.darkSquare,
-                  ]}
-                />
-              ))}
-            </View>
-          </View>
+          <Image
+            source={require('../assets/images/5842193_2968255 1.png')}
+            style={styles.placeholderImage}
+            resizeMode="contain"
+          />
         </View>
 
         {/* Text Content */}
@@ -131,21 +119,6 @@ const styles = StyleSheet.create({
     height: height * 0.4,
     borderRadius: 12,
     overflow: 'hidden',
-  },
-  checkerboard: {
-    flex: 1,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  checkerSquare: {
-    width: '10%',
-    height: '10%',
-  },
-  lightSquare: {
-    backgroundColor: '#f0f0f0',
-  },
-  darkSquare: {
-    backgroundColor: '#e0e0e0',
   },
   textContainer: {
     paddingBottom: 40,

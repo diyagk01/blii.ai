@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   SafeAreaView,
   ScrollView,
@@ -10,8 +11,9 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
+import AuthService from '../services/auth';
 
 const LoginScreen = () => {
   const router = useRouter();
@@ -21,6 +23,7 @@ const LoginScreen = () => {
   });
   const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({
@@ -34,7 +37,7 @@ const LoginScreen = () => {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
-    router.push('/chat-screen');
+    router.push('/home');
     
     // Handle login logic
     console.log('Login with:', formData, 'Remember me:', rememberMe);
@@ -42,24 +45,49 @@ const LoginScreen = () => {
 
   const handleGoogleLogin = async () => {
     try {
-      // Sign in with Google
-      const userInfo = await GoogleSignIn.signIn();
+      setLoading(true);
+      
+      // Sign in with Google using our AuthService
+      const userInfo = await AuthService.getInstance().signInWithGoogle();
       console.log('Google Sign-In Success:', userInfo);
 
-      // Handle the login success (e.g., navigate to chat screen)
-      router.push('/chat-screen');
+      // Handle the login success (e.g., navigate to home screen)
+      router.push('/home');
     } catch (error: any) {
       console.error('Google Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Google');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const handleAppleLogin = () => {
-    console.log('Login with Apple');
+  const handleAppleLogin = async () => {
+    try {
+      setLoading(true);
+      
+      // Check if Apple Sign In is available
+      const isAvailable = await AuthService.getInstance().isAppleAuthenticationAvailable();
+      if (!isAvailable) {
+        Alert.alert('Error', 'Apple Sign In is not available on this device');
+        return;
+      }
+      
+      // Sign in with Apple using our AuthService
+      const userInfo = await AuthService.getInstance().signInWithApple();
+      console.log('Apple Sign-In Success:', userInfo);
+
+      // Handle the login success (e.g., navigate to home screen)
+      router.push('/home');
+    } catch (error: any) {
+      console.error('Apple Sign-In Error:', error);
+      Alert.alert('Error', error.message || 'Failed to sign in with Apple');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleBackPress = () => {
-    console.log('Navigate back');
+    router.back();
   };
 
   const handleForgotPassword = () => {
@@ -169,12 +197,28 @@ const LoginScreen = () => {
 
           {/* Social Login Buttons */}
           <View style={styles.socialButtonsContainer}>
-            <TouchableOpacity style={styles.socialButton} onPress={handleGoogleLogin}>
-              <Text style={styles.socialButtonText}>🔍 Google</Text>
+            <TouchableOpacity 
+              style={[styles.socialButton, loading && styles.socialButtonDisabled]} 
+              onPress={handleGoogleLogin}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator size="small" color="#000" />
+              ) : (
+                <Text style={styles.socialButtonText}>🔍 Google</Text>
+              )}
             </TouchableOpacity>
             
-            <TouchableOpacity style={styles.socialButton} onPress={handleAppleLogin}>
-              <Text style={styles.socialButtonText}>🍎 Apple</Text>
+            <TouchableOpacity 
+              style={[styles.socialButton, loading && styles.socialButtonDisabled]} 
+              onPress={handleAppleLogin}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator size="small" color="#000" />
+              ) : (
+                <Text style={styles.socialButtonText}>🍎 Apple</Text>
+              )}
             </TouchableOpacity>
           </View>
 
@@ -341,6 +385,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
     backgroundColor: '#fff',
+  },
+  socialButtonDisabled: {
+    opacity: 0.6,
   },
   socialButtonText: {
     fontSize: 16,

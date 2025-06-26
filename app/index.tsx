@@ -39,7 +39,7 @@ const OnboardingScreen: React.FC = () => {
         {/* Image Area */}
         <View style={styles.imageContainer}>
           <Image
-            source={require('../assets/images/index.png')}
+            source={require('../assets/images/10802150_4529350 1.png')}
             style={styles.placeholderImage}
             resizeMode="cover"
           />
