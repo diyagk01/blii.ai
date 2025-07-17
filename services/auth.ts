@@ -8,8 +8,9 @@ import * as WebBrowser from 'expo-web-browser';
 WebBrowser.maybeCompleteAuthSession();
 
 import { DISABLE_GOOGLE_AUTH, GOOGLE_OAUTH_CONFIG, isGoogleAuthConfigured } from '../config/google-auth';
+import DatabaseService from './database';
 
-// Create redirect URI using Expo's helper - this automatically handles the correct URI for the platform
+// Create redirect URI using Expo's auth proxy for better compatibility
 const redirectUri = AuthSession.makeRedirectUri();
 
 console.log('Redirect URI:', redirectUri); // Debug log
@@ -35,12 +36,46 @@ export interface AppleUser {
 
 class AuthService {
   private static instance: AuthService;
+  private dbService = DatabaseService.getInstance();
   
   public static getInstance(): AuthService {
     if (!AuthService.instance) {
       AuthService.instance = new AuthService();
     }
     return AuthService.instance;
+  }
+
+  // Save user to Supabase database
+  private async saveUserToDatabase(user: GoogleUser | AppleUser, provider: 'google' | 'apple'): Promise<string | null> {
+    try {
+      // Check if user already exists
+      const existingUser = await this.dbService.getUserByEmail(user.email || '');
+      
+      if (existingUser) {
+        // Update last login
+        await this.dbService.updateUserLastLogin(existingUser.id);
+        console.log('User already exists, updated last login:', existingUser.id);
+        return existingUser.id;
+      } else {
+        // Create new user
+        const newUser = await this.dbService.createUser({
+          email: user.email || '',
+          name: user.name || '',
+          picture: 'picture' in user ? user.picture : undefined,
+          provider,
+        });
+        
+        if (newUser) {
+          console.log('New user created in database:', newUser.id);
+          return newUser.id;
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error saving user to database:', error);
+      return null;
+    }
   }
 
   // Sign in with Apple
@@ -66,9 +101,15 @@ class AuthService {
         } : undefined,
       };
 
-      // Store user info
+      // Save user to Supabase database
+      const databaseUserId = await this.saveUserToDatabase(appleUser, 'apple');
+
+      // Store user info locally
       await AsyncStorage.setItem('user', JSON.stringify(appleUser));
       await AsyncStorage.setItem('auth_provider', 'apple');
+      if (databaseUserId) {
+        await AsyncStorage.setItem('database_user_id', databaseUserId);
+      }
       
       // Store Apple specific data
       if (credential.identityToken) {
@@ -106,8 +147,9 @@ class AuthService {
     }
 
     try {
-      console.log('Starting Google Sign-In with client ID:', GOOGLE_OAUTH_CONFIG.clientId);
-      console.log('Using redirect URI:', redirectUri);
+      console.log('Starting Google Sign-In...');
+      console.log('Client ID:', GOOGLE_OAUTH_CONFIG.clientId);
+      console.log('Redirect URI:', redirectUri);
 
       // Create request
       const request = new AuthSession.AuthRequest({
@@ -137,12 +179,18 @@ class AuthService {
         // Get user info from Google
         const userInfo = await this.getGoogleUserInfo(tokenResponse.access_token);
         
+        // Save user to Supabase database
+        const databaseUserId = await this.saveUserToDatabase(userInfo, 'google');
+        
         // Store tokens securely
         await this.storeTokens(tokenResponse);
         
-        // Store user info
+        // Store user info locally
         await AsyncStorage.setItem('user', JSON.stringify(userInfo));
         await AsyncStorage.setItem('auth_provider', 'google');
+        if (databaseUserId) {
+          await AsyncStorage.setItem('database_user_id', databaseUserId);
+        }
         
         return userInfo;
       } else if (result.type === 'cancel') {
@@ -218,6 +266,16 @@ class AuthService {
     }
   }
 
+  // Get database user ID
+  async getDatabaseUserId(): Promise<string | null> {
+    try {
+      return await AsyncStorage.getItem('database_user_id');
+    } catch (error) {
+      console.error('Error getting database user ID:', error);
+      return null;
+    }
+  }
+
   // Get auth provider
   async getAuthProvider(): Promise<string | null> {
     try {
@@ -236,6 +294,7 @@ class AuthService {
         'access_token', 
         'refresh_token', 
         'auth_provider',
+        'database_user_id',
         'apple_identity_token',
         'apple_auth_code'
       ]);

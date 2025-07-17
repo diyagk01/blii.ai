@@ -1,18 +1,19 @@
 // app/index.tsx
 'use client';
 
-import { Ionicons } from '@expo/vector-icons';
+import { ResizeMode, Video } from 'expo-av';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   Dimensions,
   Image,
+  ImageBackground,
   SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 
 const { width, height } = Dimensions.get('window');
@@ -26,30 +27,52 @@ const OnboardingScreen: React.FC = () => {
   };
 
   const handleSkip = () => {
-    // Skip onboarding: navigate to home or main screen
-    router.replace('/home');
+    // Skip onboarding: navigate to sign up screen
+    router.replace('/signupscreen');
+  };
+
+  const handleBack = () => {
+    // Navigate back to the previous screen
+    router.back();
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
+      <ImageBackground
+        source={require('../assets/images/Screenshot 2025-07-11 at 9.19.53 PM.png')}
+        style={StyleSheet.absoluteFill}
+        resizeMode="cover"
+      />
+
+      {/* Top Row: Skip only (no back button on first page) */}
+      <View style={{ position: 'absolute', top: 90, left: 0, right: 0, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', zIndex: 2, paddingHorizontal: 20 }}>
+        <TouchableOpacity onPress={handleSkip} style={styles.skipButton}>
+          <Text style={styles.skipText}>Skip</Text>
+        </TouchableOpacity>
+      </View>
 
       {/* Main Content */}
       <View style={styles.content}>
         {/* Image Area */}
         <View style={styles.imageContainer}>
-          <Image
-            source={require('../assets/images/10802150_4529350 1.png')}
+          <Video
+            source={require('../assets/animations/Onboarding 1.mov')}
+            rate={1.0}
+            volume={1.0}
+            isMuted={false}
+            resizeMode={ResizeMode.COVER}
+            shouldPlay
+            isLooping
             style={styles.placeholderImage}
-            resizeMode="cover"
           />
         </View>
 
         {/* Text Content */}
         <View style={styles.textContainer}>
-          <Text style={styles.title}>All your stuff,{'\n'}one place</Text>
+          <Text style={styles.title}>Save it like you chat</Text>
           <Text style={styles.description}>
-            Whether it's a thought, resource or reminder, just drop it in the chat. Bill keeps them safe and easy to find.
+            PDFs, links, thoughts. Send it like a message and save it for later.
           </Text>
         </View>
       </View>
@@ -66,7 +89,10 @@ const OnboardingScreen: React.FC = () => {
 
           {/* Next Button */}
           <TouchableOpacity onPress={handleNext} style={styles.nextButton}>
-            <Ionicons name="arrow-forward" size={20} color="#000" />
+            <Image
+              source={require('../assets/animations/4d5d3e183a97848bb37625ee893df1d7a1362f14.gif')}
+              style={{ width: 32, height: 32, resizeMode: 'contain' }}
+            />
           </TouchableOpacity>
         </View>
       </View>
@@ -77,17 +103,19 @@ const OnboardingScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    // backgroundColor: '#ffffff',
   },
   content: {
     flex: 1,
     paddingHorizontal: 20,
+    // Remove justifyContent override
   },
   imageContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 40,
+    marginTop: 0,
+    marginBottom: 10,
   },
   placeholderImage: {
     width: width * 0.8,
@@ -96,7 +124,9 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   textContainer: {
+    marginTop: 0,
     paddingBottom: 40,
+    marginBottom: 0,
   },
   title: {
     fontSize: 32,
@@ -125,23 +155,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: '#e0e0e0',
-    marginHorizontal: 4,
+    marginHorizontal: 2,
   },
   activeDot: {
-    backgroundColor: '#000000',
-    width: 24,
+    backgroundColor: '#888',
+    width: 28,
+    height: 7,
+    borderRadius: 3.5,
   },
   nextButton: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#0066FF', // changed to blue
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  skipButton: {
+    backgroundColor: 'transparent',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    borderRadius: 0,
+    zIndex: 1,
+  },
+  skipText: {
+    fontSize: 15,
+    color: '#666',
+    fontWeight: '300',
+    backgroundColor: 'transparent',
+  },
+  backButton: {
+    padding: 4,
+    zIndex: 10,
+  },
+  customBackArrow: {
+    width: 13,
+    height: 13,
+    borderLeftWidth: 1.5,
+    borderBottomWidth: 1.5,
+    borderColor: '#222',
+    borderRadius: 2,
+    transform: [{ rotate: '45deg' }],
+    backgroundColor: 'transparent',
   },
 });
 

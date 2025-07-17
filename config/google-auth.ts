@@ -5,9 +5,17 @@
 // 2. Create a new project or select existing one
 // 3. Enable Google+ API (or Google Identity API)
 // 4. Go to "Credentials" → "Create Credentials" → "OAuth 2.0 Client IDs"
-// 5. For Expo development, create a Web application client with:
-//    - Authorized redirect URIs: http://localhost:8082
-// 6. Replace the web client ID below
+// 5. For mobile apps, you need both:
+//    - Web application client (for development)
+//    - Android/iOS clients (for production)
+// 
+// For Expo development, create a Web application client with:
+//    - Authorized redirect URIs: 
+//      * https://auth.expo.io/@your-expo-username/your-project-slug
+//      * exp://localhost:8081/--/
+//      * exp://your-ip:8081/--/
+// 
+// Replace the web client ID below with your actual client ID
 
 
 // IMPORTANT: For Expo development, use the web client ID for all platforms
@@ -29,7 +37,7 @@ export const GOOGLE_OAUTH_CONFIG = {
   redirectUri: undefined, // Let Expo handle this
 };
 
-// Set this to false once you've removed the invalid redirect URIs
+// Set this to false once you've updated the redirect URIs in Google Console
 export const DISABLE_GOOGLE_AUTH = false;
 
 // Validation function to check if config is properly set up

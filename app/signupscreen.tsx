@@ -6,6 +6,7 @@ import React, { useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Image,
     SafeAreaView,
     ScrollView,
     StatusBar,
@@ -15,7 +16,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
-import AuthService from '../services/auth';
+import SupabaseAuthService from '../services/supabase-auth';
 
 const SignUpScreen = () => {
     const router = useRouter();
@@ -37,7 +38,7 @@ const SignUpScreen = () => {
     }));
   };
 
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
     if (!formData.name || !formData.email || !formData.password || !formData.confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
@@ -48,29 +49,60 @@ const SignUpScreen = () => {
       return;
     }
     
+    if (formData.password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters long');
+      return;
+    }
+    
     if (!acceptTerms) {
       Alert.alert('Error', 'Please accept the terms and privacy policy');
       return;
     }
     
-    // Handle sign up logic - for now navigate to home
-    // In a real app, you would create the account first
-    console.log('Sign up with:', formData);
-    Alert.alert('Success', 'Account created successfully!', [
-      { text: 'OK', onPress: () => router.push('/home') }
-    ]);
+    try {
+      setLoading(true);
+      console.log('Sign up with:', formData);
+      
+      // Create account with Supabase
+      const userInfo = await SupabaseAuthService.getInstance().signUpWithEmail(
+        formData.email,
+        formData.password,
+        formData.name
+      );
+      
+      console.log('Email Signup Success:', userInfo);
+      
+      // Check if email confirmation is required
+      if ('emailConfirmationRequired' in userInfo && userInfo.emailConfirmationRequired) {
+        Alert.alert(
+          'Check Your Email', 
+          'We sent you a confirmation email. Please click the link in the email to activate your account.',
+          [{ text: 'OK', onPress: () => router.push('/loginscreen') }]
+        );
+      } else {
+        // Account created and logged in
+        Alert.alert('Success', 'Account created successfully!', [
+          { text: 'OK', onPress: () => router.replace('/(tabs)') }
+        ]);
+      }
+    } catch (error: any) {
+      console.error('Signup Error:', error);
+      Alert.alert('Error', error.message || 'Failed to create account');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignUp = async () => {
     try {
       setLoading(true);
       
-      // Sign in with Google using our AuthService
-      const userInfo = await AuthService.getInstance().signInWithGoogle();
+      // Sign in with Google using Supabase AuthService
+      const userInfo = await SupabaseAuthService.getInstance().signInWithGoogle();
       console.log('Google Sign-Up Success:', userInfo);
 
-      // Navigate to home screen after successful signup
-      router.push('/home');
+      // Navigate to tabs after successful signup
+      router.replace('/(tabs)');
     } catch (error: any) {
       console.error('Google Sign-Up Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign up with Google');
@@ -84,18 +116,18 @@ const SignUpScreen = () => {
       setLoading(true);
       
       // Check if Apple Sign In is available
-      const isAvailable = await AuthService.getInstance().isAppleAuthenticationAvailable();
+      const isAvailable = await SupabaseAuthService.getInstance().isAppleAuthenticationAvailable();
       if (!isAvailable) {
         Alert.alert('Error', 'Apple Sign In is not available on this device');
         return;
       }
       
-      // Sign in with Apple using our AuthService
-      const userInfo = await AuthService.getInstance().signInWithApple();
+      // Sign in with Apple using Supabase AuthService
+      const userInfo = await SupabaseAuthService.getInstance().signInWithApple();
       console.log('Apple Sign-Up Success:', userInfo);
 
-      // Navigate to home screen after successful signup
-      router.push('/home');
+      // Navigate to tabs after successful signup
+      router.replace('/(tabs)');
     } catch (error: any) {
       console.error('Apple Sign-Up Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign up with Apple');
@@ -231,11 +263,18 @@ const SignUpScreen = () => {
 
           {/* Sign Up Button */}
           <TouchableOpacity
-            style={[styles.signUpButton, !acceptTerms && styles.signUpButtonDisabled]}
+            style={[
+              styles.signUpButton, 
+              (!acceptTerms || loading) && styles.signUpButtonDisabled
+            ]}
             onPress={handleSignUp}
-            disabled={!acceptTerms}
+            disabled={!acceptTerms || loading}
           >
-            <Text style={styles.signUpButtonText}>Sign Up</Text>
+            {loading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.signUpButtonText}>Sign Up</Text>
+            )}
           </TouchableOpacity>
 
           {/* Divider */}
@@ -255,7 +294,7 @@ const SignUpScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Text style={styles.socialButtonText}>🔍 Google</Text>
+                <Image source={require('../assets/images/Frame 36695.png')} style={styles.socialButtonImage} />
               )}
             </TouchableOpacity>
             <TouchableOpacity 
@@ -266,7 +305,7 @@ const SignUpScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Text style={styles.socialButtonText}>🍎 Apple</Text>
+                <Image source={require('../assets/images/Frame 36695 (1).png')} style={styles.socialButtonImage} />
               )}
             </TouchableOpacity>
           </View>
@@ -423,7 +462,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
+    justifyContent: 'center',
     marginHorizontal: 6,
+    height: 48, // Ensure a fixed height for the button
+    flexDirection: 'row',
+    backgroundColor: '#fff',
   },
   socialButtonDisabled: {
     opacity: 0.6,
@@ -432,6 +475,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#000',
     fontWeight: '500',
+  },
+  socialButtonImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
+    alignSelf: 'center',
   },
   loginContainer: {
     alignItems: 'center',

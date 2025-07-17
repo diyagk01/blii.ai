@@ -2,18 +2,19 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Image,
+    SafeAreaView,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
-import AuthService from '../services/auth';
+import SupabaseAuthService from '../services/supabase-auth';
 
 const LoginScreen = () => {
   const router = useRouter();
@@ -32,27 +33,43 @@ const LoginScreen = () => {
     }));
   };
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!formData.email || !formData.password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
-    router.push('/home');
     
-    // Handle login logic
-    console.log('Login with:', formData, 'Remember me:', rememberMe);
+    try {
+      setLoading(true);
+      
+      // Sign in with email and password using Supabase
+      const userInfo = await SupabaseAuthService.getInstance().signInWithEmail(
+        formData.email,
+        formData.password
+      );
+      
+      console.log('Email Sign-In Success:', userInfo);
+      
+      // Navigate to tabs after successful login
+      router.replace('/(tabs)');
+    } catch (error: any) {
+      console.error('Email Sign-In Error:', error);
+      Alert.alert('Error', error.message || 'Invalid email or password');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleGoogleLogin = async () => {
     try {
       setLoading(true);
       
-      // Sign in with Google using our AuthService
-      const userInfo = await AuthService.getInstance().signInWithGoogle();
+      // Sign in with Google using Supabase AuthService
+      const userInfo = await SupabaseAuthService.getInstance().signInWithGoogle();
       console.log('Google Sign-In Success:', userInfo);
 
-      // Handle the login success (e.g., navigate to home screen)
-      router.push('/home');
+      // Navigate to tabs after successful login
+      router.replace('/(tabs)');
     } catch (error: any) {
       console.error('Google Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Google');
@@ -66,18 +83,18 @@ const LoginScreen = () => {
       setLoading(true);
       
       // Check if Apple Sign In is available
-      const isAvailable = await AuthService.getInstance().isAppleAuthenticationAvailable();
+      const isAvailable = await SupabaseAuthService.getInstance().isAppleAuthenticationAvailable();
       if (!isAvailable) {
         Alert.alert('Error', 'Apple Sign In is not available on this device');
         return;
       }
       
-      // Sign in with Apple using our AuthService
-      const userInfo = await AuthService.getInstance().signInWithApple();
+      // Sign in with Apple using Supabase AuthService
+      const userInfo = await SupabaseAuthService.getInstance().signInWithApple();
       console.log('Apple Sign-In Success:', userInfo);
 
-      // Handle the login success (e.g., navigate to home screen)
-      router.push('/home');
+      // Navigate to tabs after successful login
+      router.replace('/(tabs)');
     } catch (error: any) {
       console.error('Apple Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Apple');
@@ -182,10 +199,15 @@ const LoginScreen = () => {
 
           {/* Login Button */}
           <TouchableOpacity
-            style={styles.loginButton}
+            style={[styles.loginButton, loading && styles.loginButtonDisabled]}
             onPress={handleLogin}
+            disabled={loading}
           >
-            <Text style={styles.loginButtonText}>Log In</Text>
+            {loading ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.loginButtonText}>Log In</Text>
+            )}
           </TouchableOpacity>
 
           {/* Divider */}
@@ -205,7 +227,7 @@ const LoginScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Text style={styles.socialButtonText}>🔍 Google</Text>
+                <Image source={require('../assets/images/Frame 36695.png')} style={styles.socialButtonImage} />
               )}
             </TouchableOpacity>
             
@@ -217,7 +239,7 @@ const LoginScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Text style={styles.socialButtonText}>🍎 Apple</Text>
+                <Image source={require('../assets/images/Frame 36695 (1).png')} style={styles.socialButtonImage} />
               )}
             </TouchableOpacity>
           </View>
@@ -354,6 +376,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
   },
+  loginButtonDisabled: {
+    opacity: 0.6,
+  },
   loginButtonText: {
     color: '#fff',
     fontSize: 16,
@@ -383,8 +408,19 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 12,
     backgroundColor: '#fff',
+    height: 48, // Ensure a fixed height for the button
+    width: '100%', // Optional: if you want full width
+    flexDirection: 'row',
+  },
+  socialButtonImage: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    resizeMode: 'contain',
+    alignSelf: 'center',
   },
   socialButtonDisabled: {
     opacity: 0.6,
