@@ -31,7 +31,7 @@ class PerplexityService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',

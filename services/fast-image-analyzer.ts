@@ -19,7 +19,7 @@ class FastImageAnalyzer {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',

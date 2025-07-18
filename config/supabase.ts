@@ -51,6 +51,8 @@ export interface ChatMessage {
   word_count?: number;         // Number of words in extracted content
   content_category?: string;   // Auto-categorized content type
   extraction_status?: string;  // 'pending' | 'completed' | 'failed'
+  // Deletion tracking
+  deleted_at?: string | null;  // Timestamp when item was deleted (null if not deleted)
   created_at: string;
   updated_at: string;
 }
@@ -65,4 +67,4 @@ export interface UploadedFile {
   file_type: string;
   file_size: number;
   created_at: string;
-} 
+}

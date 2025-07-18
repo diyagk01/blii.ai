@@ -1,4 +1,5 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import { Image, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
@@ -30,7 +31,7 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
       {/* Profile Card */}
       <View style={styles.profileCard}>
         <Image
-          source={{ uri: userAvatarUrl }}
+          source={require('../assets/images/Frame 1686554130.png')}
           style={styles.avatar}
         />
         <View style={styles.profileTextCol}>
@@ -40,12 +41,25 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
         <Ionicons name="chevron-forward" size={20} color="#B0B0B0" style={{ marginLeft: 'auto' }} />
       </View>
 
-      {/* Upgrade Card */}
-      <TouchableOpacity style={{ marginBottom: 12 }} activeOpacity={0.85} onPress={() => router.push('/UpgradePro')}>
-        <Image
-          source={require('../assets/images/Frame 1686554138.png')}
-          style={{ width: 219, height: 70, borderRadius: 12, resizeMode: 'cover', alignSelf: 'center' }}
-        />
+      {/* Upgrade Card with Linear Gradient */}
+      <TouchableOpacity activeOpacity={0.85} onPress={() => router.push('/UpgradePro')} style={{ borderRadius: 10, overflow: 'hidden', marginTop: 23, marginBottom: 12, marginRight: 10, marginLeft: 10 }}>
+        <LinearGradient
+          colors={["#589AFF", "#0065FF"]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.upgradeCard}
+        >
+          <View style={styles.upgradeLeftBlock}>
+            <View style={styles.upgradeCircle}>
+              <Ionicons name="add" size={20} color="#4285F4" />
+            </View>
+            <View>
+              <Text style={styles.upgradeTitle}>Upgrade to Blii Pro</Text>
+              <Text style={styles.upgradeSubtitle}>Get full access to AI, unlimited saves, smart search and more.</Text>
+            </View>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color="#fff" />
+        </LinearGradient>
       </TouchableOpacity>
 
       {/* Menu List */}
@@ -67,7 +81,7 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
           <Ionicons name="settings-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Settings</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => router.push('/recently-deleted')}>
           <Ionicons name="trash-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Recently Deleted</Text>
         </TouchableOpacity>
@@ -85,27 +99,32 @@ const styles = StyleSheet.create({
     width: 280,
     height: '100%',
     backgroundColor: '#fff',
-    padding: 16,
+    paddingLeft: 24,
+    paddingRight: 16,
+    paddingTop: 16,
+    paddingBottom: 16,
     flexDirection: 'column',
   },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 14,
-    marginTop: 16,
-    marginBottom: 12,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 12,
+    marginBottom: 10,
+    marginRight: 10,
+    marginLeft: 10,
     shadowColor: '#000',
     shadowOpacity: 0.06,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
   avatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: '#F3F4F6',
     resizeMode: 'cover',
   },
@@ -129,43 +148,47 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   upgradeCard: {
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: 10,
+    padding: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
-    marginBottom: 0,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 3,
   },
   upgradeLeftBlock: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    flex: 1,
   },
   upgradeCircle: {
-    width: 36,
-    height: 36,
+    width: 30,
+    height: 30,
     backgroundColor: '#fff',
-    borderRadius: 18,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   upgradeTitle: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: '#fff',
     fontFamily: 'System',
-    lineHeight: 20,
+    lineHeight: 18,
   },
   upgradeSubtitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '400',
     color: '#fff',
     fontFamily: 'System',
-    lineHeight: 16,
-    marginTop: 2,
-    maxWidth: 160,
+    lineHeight: 14,
+    marginTop: 1,
+    maxWidth: 140,
   },
   divider: {
     marginTop: 18,
@@ -180,6 +203,7 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 10,
     borderRadius: 8,
+    marginLeft: 20,
     paddingHorizontal: 4,
   },
   menuLabel: {
@@ -188,4 +212,4 @@ const styles = StyleSheet.create({
     color: '#222',
     fontFamily: 'System',
   },
-}); 
+});

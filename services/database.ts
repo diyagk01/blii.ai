@@ -81,7 +81,7 @@ export class DatabaseService {
   }): Promise<ChatMessage | null> {
     try {
       const { data, error } = await supabase
-        .from('messages')
+        .from('chat_messages')
         .insert([{
           ...messageData,
           timestamp: new Date().toISOString(),
@@ -105,7 +105,7 @@ export class DatabaseService {
   async getUserMessages(userId: string, limit: number = 50): Promise<ChatMessage[]> {
     try {
       const { data, error } = await supabase
-        .from('messages')
+        .from('chat_messages')
         .select('*')
         .eq('user_id', userId)
         .order('created_at', { ascending: false })
@@ -216,7 +216,7 @@ export class DatabaseService {
   async searchMessages(userId: string, query: string): Promise<ChatMessage[]> {
     try {
       const { data, error } = await supabase
-        .from('messages')
+        .from('chat_messages')
         .select('*')
         .eq('user_id', userId)
         .or(`content.ilike.%${query}%,tags.cs.{${query}}`)
@@ -233,6 +233,128 @@ export class DatabaseService {
       return [];
     }
   }
+
+  // Deletion and Recovery functionality
+  async softDeleteMessage(messageId: string): Promise<boolean> {
+    try {
+      const { error } = await supabase
+        .from('chat_messages')
+        .update({ 
+          deleted_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', messageId);
+
+      if (error) {
+        console.error('Error soft deleting message:', error);
+        return false;
+      }
+
+      console.log('Message soft deleted successfully:', messageId);
+      return true;
+    } catch (error) {
+      console.error('Error soft deleting message:', error);
+      return false;
+    }
+  }
+
+  async getDeletedMessages(userId: string): Promise<ChatMessage[]> {
+    try {
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('user_id', userId)
+        .not('deleted_at', 'is', null)
+        .order('deleted_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching deleted messages:', error);
+        return [];
+      }
+
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching deleted messages:', error);
+      return [];
+    }
+  }
+
+  async recoverMessage(messageId: string): Promise<boolean> {
+    try {
+      const { error } = await supabase
+        .from('chat_messages')
+        .update({ 
+          deleted_at: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', messageId);
+
+      if (error) {
+        console.error('Error recovering message:', error);
+        return false;
+      }
+
+      console.log('Message recovered successfully:', messageId);
+      return true;
+    } catch (error) {
+      console.error('Error recovering message:', error);
+      return false;
+    }
+  }
+
+  async permanentlyDeleteMessage(messageId: string): Promise<boolean> {
+    try {
+      // First delete associated files
+      const { error: filesError } = await supabase
+        .from('uploaded_files')
+        .delete()
+        .eq('message_id', messageId);
+
+      if (filesError) {
+        console.error('Error deleting associated files:', filesError);
+      }
+
+      // Then delete the message
+      const { error } = await supabase
+        .from('chat_messages')
+        .delete()
+        .eq('id', messageId);
+
+      if (error) {
+        console.error('Error permanently deleting message:', error);
+        return false;
+      }
+
+      console.log('Message permanently deleted successfully:', messageId);
+      return true;
+    } catch (error) {
+      console.error('Error permanently deleting message:', error);
+      return false;
+    }
+  }
+
+  // Update getUserMessages to exclude deleted messages
+  async getUserMessagesActive(userId: string, limit: number = 50): Promise<ChatMessage[]> {
+    try {
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('user_id', userId)
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (error) {
+        console.error('Error fetching active messages:', error);
+        return [];
+      }
+
+      return data || [];
+    } catch (error) {
+      console.error('Error fetching active messages:', error);
+      return [];
+    }
+  }
 }
 
-export default DatabaseService; 
+export default DatabaseService;

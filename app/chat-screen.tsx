@@ -1196,7 +1196,6 @@ const ChatScreen = () => {
             </TouchableOpacity>
             <View style={styles.headerCenter}>
               <Text style={styles.headerTitle}>Chat</Text>
-              {aiMode && <Text style={styles.aiModeIndicator}>AI Mode</Text>}
             </View>
             <View style={styles.headerRight}>
               <TouchableOpacity style={styles.clearButton} onPress={clearAllMessages}>
@@ -1232,7 +1231,12 @@ const ChatScreen = () => {
           {messages.map((message, index) => (
             <TouchableOpacity
               key={`message-${index}-${message.id}`}
-              style={[styles.messageContainer, message.isBot ? styles.botMessageContainer : styles.userMessageContainer]}
+              style={[
+                styles.messageContainer, 
+                message.isBot 
+                  ? styles.botMessageContainer 
+                  : (selectionMode ? styles.userMessageContainerSelection : styles.userMessageContainer)
+              ]}
               onLongPress={(event) => handleMessageLongPress(message, event)}
               onPress={() => {
                 if (selectionMode && !message.isBot) {
@@ -1244,19 +1248,19 @@ const ChatScreen = () => {
             >
               {/* Selection circle for user messages when in selection mode */}
               {selectionMode && !message.isBot && (
-                <TouchableOpacity 
-                  style={styles.selectionCircle}
-                  onPress={() => toggleMessageSelection(message.id)}
-                >
-                  <View style={[
-                    styles.selectionCircleInner,
-                    selectedMessages.has(message.id) && styles.selectionCircleSelected
-                  ]}>
+                <View style={styles.selectionCircle}>
+                  <TouchableOpacity 
+                    style={[
+                      styles.selectionCircleInner,
+                      selectedMessages.has(message.id) && styles.selectionCircleSelected
+                    ]}
+                    onPress={() => toggleMessageSelection(message.id)}
+                  >
                     {selectedMessages.has(message.id) && (
                       <Ionicons name="checkmark" size={16} color="#fff" />
                     )}
-                  </View>
-                </TouchableOpacity>
+                  </TouchableOpacity>
+                </View>
               )}
               
               <View style={[styles.messageBubble, message.isBot ? styles.botMessage : styles.userMessage]}>
@@ -1364,8 +1368,8 @@ const ChatScreen = () => {
         </ScrollView>
       </View>
 
-      {/* Action Buttons */}
-      {messages.length <= 4 && (
+      {/* Action Buttons - Only show when there are no user messages */}
+      {messages.filter(msg => !msg.isBot).length === 0 && (
         <View style={styles.actionButtonsContainer}>
           <TouchableOpacity style={styles.actionButton} onPress={pickImage}>
             <Ionicons name="camera" size={20} color="#007AFF" />
@@ -1871,6 +1875,10 @@ const styles = StyleSheet.create({
   userMessageContainer: {
     alignItems: 'flex-end',
   },
+  userMessageContainerSelection: {
+    alignItems: 'flex-end',
+    marginLeft: 50, // Add space for selection circles
+  },
   messageBubble: {
     maxWidth: '80%',
     paddingHorizontal: 16,
@@ -1952,7 +1960,8 @@ const styles = StyleSheet.create({
   },
   inputContainer: {
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingTop: 16,
+    paddingBottom: 8,
     borderTopWidth: 1,
     borderTopColor: '#f0f0f0',
   },
@@ -2490,26 +2499,35 @@ const styles = StyleSheet.create({
   // Selection circle styles
   selectionCircle: {
     position: 'absolute',
-    left: -40,
+    left: -45,
     top: 10,
-    width: 24,
-    height: 24,
+    width: 32,
+    height: 32,
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 1,
+    zIndex: 10,
   },
   selectionCircleInner: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
     borderWidth: 2,
     borderColor: '#007AFF',
-    backgroundColor: 'transparent',
+    backgroundColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 3,
   },
   selectionCircleSelected: {
     backgroundColor: '#007AFF',
+    borderColor: '#007AFF',
   },
   // Selection bottom bar styles
   selectionBottomBar: {
