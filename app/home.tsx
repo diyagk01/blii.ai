@@ -104,13 +104,29 @@ const HomeScreen = () => {
   const loadRecentUploads = async () => {
     try {
       console.log('Loading recent uploads...');
-      const messages = await ChatService.getInstance().getUserMessages(20); // Get last 20 messages
+      // Get more messages to ensure we capture all uploads (50 messages should cover most cases)
+      const allMessages = await ChatService.getInstance().getUserMessages(50);
       
-      // Filter for images and files only
+      // Filter for images, files, and links first, then get the most recent ones
+      const uploadMessages = allMessages
+        .filter(msg => {
+          // Include all images, files, and links that have proper URLs or are link type
+          const isValidUpload = (
+            (msg.type === 'image' && msg.file_url) ||
+            (msg.type === 'file' && msg.file_url) ||
+            (msg.type === 'link' && (msg.file_url || msg.content.includes('http')))
+          );
+          
+          console.log(`Checking message ${msg.id}: type=${msg.type}, has_file_url=${!!msg.file_url}, is_valid=${isValidUpload}`);
+          return isValidUpload;
+        })
+        .slice(0, 20); // Take the 20 most recent uploads
+      
+      console.log(`Found ${uploadMessages.length} valid uploads out of ${allMessages.length} total messages`);
+      
+      // Process uploads to create display data
       const uploads: RecentUpload[] = await Promise.all(
-        messages
-          .filter(msg => (msg.type === 'image' || msg.type === 'file' || msg.type === 'link') && (msg.file_url || msg.type === 'link'))
-          .map(async (msg) => {
+        uploadMessages.map(async (msg) => {
             let imageUrl = '';
             let title = '';
 
@@ -158,10 +174,10 @@ const HomeScreen = () => {
       // Only take the first 6 after processing
       setRecentUploads(uploads.slice(0, 6));
       
-      // Update stats
-      const imageCount = messages.filter(msg => msg.type === 'image').length;
-      const fileCount = messages.filter(msg => msg.type === 'file').length;
-      const linkCount = messages.filter(msg => msg.type === 'link').length;
+      // Update stats using allMessages for accurate counts
+      const imageCount = allMessages.filter(msg => msg.type === 'image').length;
+      const fileCount = allMessages.filter(msg => msg.type === 'file').length;
+      const linkCount = allMessages.filter(msg => msg.type === 'link').length;
       
       setStats([
         { icon: 'image-outline', label: 'Images', count: imageCount },
@@ -285,13 +301,93 @@ const HomeScreen = () => {
     router.replace('/chat');
   };
 
+  // Function to get relevant emoji for a tag
+  const getTagEmoji = (tag: string): string => {
+    const lowerTag = tag.toLowerCase();
+    
+    // Health & Wellness
+    if (lowerTag.includes('health') || lowerTag.includes('fitness') || lowerTag.includes('wellness') || lowerTag.includes('medical')) return '🏥';
+    if (lowerTag.includes('food') || lowerTag.includes('recipe') || lowerTag.includes('cooking') || lowerTag.includes('nutrition')) return '🍽️';
+    if (lowerTag.includes('exercise') || lowerTag.includes('workout') || lowerTag.includes('gym')) return '💪';
+    
+    // Work & Business
+    if (lowerTag.includes('work') || lowerTag.includes('job') || lowerTag.includes('career') || lowerTag.includes('business')) return '💼';
+    if (lowerTag.includes('meeting') || lowerTag.includes('conference') || lowerTag.includes('presentation')) return '📊';
+    if (lowerTag.includes('finance') || lowerTag.includes('money') || lowerTag.includes('budget') || lowerTag.includes('investment')) return '💰';
+    
+    // Technology
+    if (lowerTag.includes('tech') || lowerTag.includes('software') || lowerTag.includes('code') || lowerTag.includes('programming')) return '💻';
+    if (lowerTag.includes('ai') || lowerTag.includes('artificial intelligence') || lowerTag.includes('machine learning')) return '🤖';
+    if (lowerTag.includes('app') || lowerTag.includes('mobile') || lowerTag.includes('ios') || lowerTag.includes('android')) return '📱';
+    
+    // Education & Learning
+    if (lowerTag.includes('education') || lowerTag.includes('learning') || lowerTag.includes('study') || lowerTag.includes('course')) return '📚';
+    if (lowerTag.includes('research') || lowerTag.includes('science') || lowerTag.includes('academic')) return '🔬';
+    if (lowerTag.includes('book') || lowerTag.includes('reading') || lowerTag.includes('article')) return '📖';
+    
+    // Travel & Places
+    if (lowerTag.includes('travel') || lowerTag.includes('trip') || lowerTag.includes('vacation') || lowerTag.includes('holiday')) return '✈️';
+    if (lowerTag.includes('hotel') || lowerTag.includes('accommodation') || lowerTag.includes('booking')) return '🏨';
+    if (lowerTag.includes('restaurant') || lowerTag.includes('cafe') || lowerTag.includes('dining')) return '🍴';
+    
+    // Entertainment & Media
+    if (lowerTag.includes('movie') || lowerTag.includes('film') || lowerTag.includes('cinema')) return '🎬';
+    if (lowerTag.includes('music') || lowerTag.includes('song') || lowerTag.includes('album') || lowerTag.includes('concert')) return '🎵';
+    if (lowerTag.includes('game') || lowerTag.includes('gaming') || lowerTag.includes('video game')) return '🎮';
+    if (lowerTag.includes('art') || lowerTag.includes('design') || lowerTag.includes('creative')) return '🎨';
+    
+    // Shopping & Products
+    if (lowerTag.includes('shopping') || lowerTag.includes('buy') || lowerTag.includes('purchase') || lowerTag.includes('product')) return '🛒';
+    if (lowerTag.includes('fashion') || lowerTag.includes('clothing') || lowerTag.includes('style')) return '👗';
+    if (lowerTag.includes('home') || lowerTag.includes('house') || lowerTag.includes('furniture') || lowerTag.includes('decor')) return '🏠';
+    
+    // Personal & Lifestyle
+    if (lowerTag.includes('personal') || lowerTag.includes('life') || lowerTag.includes('lifestyle')) return '🌟';
+    if (lowerTag.includes('hobby') || lowerTag.includes('interest') || lowerTag.includes('passion')) return '🎯';
+    if (lowerTag.includes('family') || lowerTag.includes('kids') || lowerTag.includes('children')) return '👨‍👩‍👧‍👦';
+    
+    // Nature & Environment
+    if (lowerTag.includes('nature') || lowerTag.includes('environment') || lowerTag.includes('outdoor')) return '🌿';
+    if (lowerTag.includes('weather') || lowerTag.includes('climate')) return '🌤️';
+    if (lowerTag.includes('animal') || lowerTag.includes('pet') || lowerTag.includes('wildlife')) return '🐾';
+    
+    // Sports & Activities
+    if (lowerTag.includes('sport') || lowerTag.includes('football') || lowerTag.includes('basketball') || lowerTag.includes('soccer')) return '⚽';
+    if (lowerTag.includes('running') || lowerTag.includes('marathon') || lowerTag.includes('jogging')) return '🏃';
+    
+    // News & Information
+    if (lowerTag.includes('news') || lowerTag.includes('current events') || lowerTag.includes('politics')) return '📰';
+    if (lowerTag.includes('important') || lowerTag.includes('urgent') || lowerTag.includes('priority')) return '⚡';
+    
+    // Default fallback
+    return '🏷️';
+  };
+
+  // Function to get color for a tag
+  const getTagColor = (tag: string): string => {
+    const lowerTag = tag.toLowerCase();
+    
+    // Use a variety of non-green colors
+    if (lowerTag.includes('health') || lowerTag.includes('medical') || lowerTag.includes('fitness')) return '#FFE5E5'; // Light red
+    if (lowerTag.includes('work') || lowerTag.includes('business') || lowerTag.includes('career')) return '#E5F0FF'; // Light blue
+    if (lowerTag.includes('tech') || lowerTag.includes('code') || lowerTag.includes('ai')) return '#F0E5FF'; // Light purple
+    if (lowerTag.includes('travel') || lowerTag.includes('trip') || lowerTag.includes('vacation')) return '#FFF5E5'; // Light orange
+    if (lowerTag.includes('education') || lowerTag.includes('learning') || lowerTag.includes('book')) return '#E5F5FF'; // Light cyan
+    if (lowerTag.includes('entertainment') || lowerTag.includes('movie') || lowerTag.includes('music')) return '#FFE5F5'; // Light pink
+    if (lowerTag.includes('shopping') || lowerTag.includes('product') || lowerTag.includes('buy')) return '#F5E5FF'; // Light lavender
+    if (lowerTag.includes('food') || lowerTag.includes('recipe') || lowerTag.includes('cooking')) return '#FFF0E5'; // Light peach
+    
+    // Default light blue
+    return '#E5F3FF';
+  };
+
   // Collect all unique tags from recentUploads for By Topic
   const allTags = Array.from(new Set(recentUploads.flatMap(u => u.tags || [])));
-  // Map tags to topic objects (add emoji/color if desired)
+  // Map tags to topic objects with relevant emojis and colors
   const tagTopics = allTags.map(tag => ({
-    name: tag,
-    color: '#E5F3FF', // default color, can be improved
-    emoji: '🏷️', // default emoji, can be improved
+    name: tag, // Use exact tag name as entered by user
+    color: getTagColor(tag),
+    emoji: getTagEmoji(tag),
   }));
 
   // Filter uploads by selected topic and search query
@@ -414,7 +510,7 @@ const HomeScreen = () => {
         ) : (
           <>
             {/* Stats 2x2 Grid */}
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 0, marginBottom: 36 }}>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', paddingHorizontal: 16, marginTop: 0, marginBottom: 8 }}>
               {[0, 1].map(row => (
                 <View key={row} style={{ flexDirection: 'row', width: '100%', marginBottom: 10 }}>
                   {[0, 1].map(col => {
@@ -442,7 +538,7 @@ const HomeScreen = () => {
                         }}
                       >
                         <Ionicons name={stat.icon as any} size={22} color="#222" style={{ marginRight: 10 }} />
-                        <Text style={{ fontSize: 15, color: '#A0A0A0', fontWeight: '500', flex: 1 }}>{stat.label}</Text>
+                        <Text style={{ fontSize: 15, color: '#4E4E4E', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 20, letterSpacing: -0.23, flex: 1 }}>{stat.label}</Text>
                         <Text style={{ fontSize: 16, color: '#B0B0B0', fontWeight: '600', marginLeft: 8 }}>{stat.count}</Text>
                       </View>
                     );
@@ -453,18 +549,18 @@ const HomeScreen = () => {
             {/* Smart Prompts */}
             <View style={{ paddingHorizontal: 16, marginTop: 0, marginBottom: 32 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 11 }}>
-                <Text style={{ color: '#2264E6', fontWeight: '700', fontSize: 17 }}>Smart Prompts</Text>
-                <Ionicons name="sparkles-outline" size={16} color="#2264E6" />
+                <Text style={{ color: '#2264E6', fontWeight: '600', fontSize: 13, fontFamily: 'SF Pro Semibold', lineHeight: 18, letterSpacing: -0.08 }}>Smart Prompts</Text>
+                <Image source={require('../assets/images/Ai Loader.png')} style={{ width: 25, height: 25, marginLeft: 6, resizeMode: 'contain' }} />
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }} contentContainerStyle={{ gap: 16 }}>
                 {smartPrompts.map((prompt, idx) => (
                   <TouchableOpacity
                     key={prompt}
                     style={{
-                      backgroundColor: '#fff',
+                      backgroundColor: 'transparent',
                       borderRadius: 12,
-                      paddingHorizontal: 18,
-                      paddingVertical: 18,
+                      paddingHorizontal: 10,
+                      paddingVertical: 10,
                       marginRight: 0,
                       width: 240,
                       borderWidth: 1.2,
@@ -474,7 +570,7 @@ const HomeScreen = () => {
                     onPress={() => handlePromptPress(prompt)}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <Text style={{ color: '#222', fontSize: 16, flex: 1, fontWeight: '500', textAlign: 'left' }} numberOfLines={2}>{prompt}</Text>
+                      <Text style={{ color: '#171717', fontSize: 12, flex: 1, fontWeight: '400', textAlign: 'left', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0 }} numberOfLines={2}>{prompt}</Text>
                       <Ionicons name="arrow-forward-outline" size={20} color="#7B61FF" style={{ marginLeft: 12 }} />
                     </View>
                   </TouchableOpacity>
@@ -482,11 +578,18 @@ const HomeScreen = () => {
               </ScrollView>
             </View>
             {/* By Topic */}
-            <View style={{ paddingHorizontal: 16, marginTop: 0, marginBottom: 24 }}>
+            <View style={{ paddingHorizontal: 16, marginTop: 0, marginBottom: 19 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, justifyContent: 'space-between' }}>
-                <Text style={{ color: '#222', fontWeight: '700', fontSize: 17 }}>By Topic</Text>
+                <Text style={{
+                  color: '#171717',
+                  fontWeight: '600',
+                  fontSize: 16,
+                  fontFamily: 'SF Pro',
+                  letterSpacing: -0.31,
+                  lineHeight: 21
+                }}>By Topic</Text>
                 <TouchableOpacity onPress={() => router.push('/all-saves')} style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={{ color: '#1877F2', fontWeight: '600', fontSize: 15, marginRight: 2 }}>See all</Text>
+                  <Text style={{ color: '#0065FF', fontWeight: '600', fontFamily: 'SF Pro Semibold', fontSize: 13, lineHeight: 18, letterSpacing: -0.08, marginRight: 2 }}>See all</Text>
                   <Ionicons name="chevron-forward" size={17} color="#1877F2" />
                 </TouchableOpacity>
                 {selectedTopic && (
@@ -500,7 +603,7 @@ const HomeScreen = () => {
                   const isSelected = selectedTopic === topic.name;
                   return (
                     <TouchableOpacity
-                      key={topic.name}
+                      key={`topic-${idx}-${topic.name}`}
                       style={{
                         flexDirection: 'row',
                         alignItems: 'center',
@@ -509,7 +612,7 @@ const HomeScreen = () => {
                         backgroundColor: isSelected ? '#F5FAFF' : '#fff',
                         borderRadius: 8,
                         paddingHorizontal: 10,
-                        paddingVertical: 6,
+                        paddingVertical: 10,
                         marginRight: 10,
                         minWidth: 44,
                         minHeight: 36,
@@ -532,28 +635,16 @@ const HomeScreen = () => {
                 {filteredUploads.map((save, idx) => (
                   <TouchableOpacity
                     key={save.id}
-                    style={{ width: 180, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', marginRight: 12, overflow: 'hidden' }}
+                    style={{ width: 154, height: 142, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#E5EAF0', marginRight: 12, overflow: 'hidden' }}
                     onPress={() => handleSavePress(save)}
                   >
-                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 90, borderTopLeftRadius: 12, borderTopRightRadius: 12 }} />
-                    <View style={{ padding: 10 }}>
-                      <Text style={{ fontSize: 13, color: '#222', fontWeight: '500' }} numberOfLines={2}>{save.title}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                        {save.type === 'link' && <Ionicons name="link-outline" size={13} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.type === 'file' && <Ionicons name="document-outline" size={13} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.type === 'image' && <Ionicons name="image-outline" size={13} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.tags && save.tags.length > 0 && (
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                            {save.tags.slice(0, 2).map((tag, i) => (
-                              <View key={tag} style={{ backgroundColor: '#E5F3FF', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 2 }}>
-                                <Text style={{ fontSize: 10, color: '#007AFF' }}>#{tag}</Text>
-                              </View>
-                            ))}
-                            {save.tags.length > 2 && (
-                              <Text style={{ fontSize: 10, color: '#888' }}>+{save.tags.length - 2}</Text>
-                            )}
-                          </View>
-                        )}
+                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 80, borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
+                    <View style={{ paddingTop: 10, paddingLeft: 10, paddingRight: 10, paddingBottom: 9 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                        {save.type === 'link' && <Ionicons name="link-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        {save.type === 'file' && <Ionicons name="document-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        {save.type === 'image' && <Ionicons name="image-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        <Text style={{ fontSize: 12, color: '#222', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0, flex: 1 }} numberOfLines={2}>{save.title}</Text>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -561,9 +652,9 @@ const HomeScreen = () => {
               </ScrollView>
             </View>
             {/* Recent Saves */}
-            <View style={{ paddingHorizontal: 16, marginTop: 18 }}>
+            <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                <Text style={{ color: '#222', fontWeight: '700', fontSize: 17 }}>Recent Saves</Text>
+                <Text style={{ color: '#222', fontWeight: '600', fontFamily: 'SF Pro Semibold', fontSize: 16, lineHeight: 21, letterSpacing: -0.31 }}>Recent Saves</Text>
                 <TouchableOpacity>
                   <Ionicons name="options-outline" size={20} color="#B0B0B0" />
                 </TouchableOpacity>
@@ -572,28 +663,16 @@ const HomeScreen = () => {
                 {recentUploads.map((save, idx) => (
                   <TouchableOpacity
                     key={save.id}
-                    style={{ width: '48%', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', marginBottom: 12, overflow: 'hidden' }}
+                    style={{ width: 186, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', marginRight: 12, marginBottom: 14, overflow: 'hidden' }}
                     onPress={() => handleSavePress(save)}
                   >
-                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 80, borderTopLeftRadius: 12, borderTopRightRadius: 12 }} />
+                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 90, borderTopLeftRadius: 12, borderTopRightRadius: 12 }} />
                     <View style={{ padding: 10 }}>
-                      <Text style={{ fontSize: 12, color: '#222', fontWeight: '500' }} numberOfLines={2}>{save.title}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
-                        {save.type === 'link' && <Ionicons name="link-outline" size={12} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.type === 'file' && <Ionicons name="document-outline" size={12} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.type === 'image' && <Ionicons name="image-outline" size={12} color="#007AFF" style={{ marginRight: 4 }} />}
-                        {save.tags && save.tags.length > 0 && (
-                          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                            {save.tags.slice(0, 2).map((tag, i) => (
-                              <View key={tag} style={{ backgroundColor: '#E5F3FF', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginRight: 4, marginBottom: 2 }}>
-                                <Text style={{ fontSize: 10, color: '#007AFF' }}>#{tag}</Text>
-                              </View>
-                            ))}
-                            {save.tags.length > 2 && (
-                              <Text style={{ fontSize: 10, color: '#888' }}>+{save.tags.length - 2}</Text>
-                            )}
-                          </View>
-                        )}
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                        {save.type === 'link' && <Ionicons name="link-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        {save.type === 'file' && <Ionicons name="document-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        {save.type === 'image' && <Ionicons name="image-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
+                        <Text style={{ fontSize: 12, color: '#222', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0, flex: 1 }} numberOfLines={2}>{save.title}</Text>
                       </View>
                     </View>
                   </TouchableOpacity>

@@ -18,11 +18,33 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView as SafeAreaContextView } from 'react-native-safe-area-context';
 import ChatService from '../services/chat';
 import OpenAIService from '../services/openai';
+
+// Typing indicator component
+const TypingIndicator = () => {
+  const [dots, setDots] = useState('');
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => {
+        if (prev === '...') return '';
+        return prev + '.';
+      });
+    }, 500);
+    
+    return () => clearInterval(interval);
+  }, []);
+  
+  return (
+    <View style={styles.typingIndicator}>
+      <Text style={styles.typingText}>Bill is thinking{dots}</Text>
+    </View>
+  );
+};
 
 interface Message {
   id: number;
@@ -63,14 +85,27 @@ const ChatScreen = () => {
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null);
   const [deleting, setDeleting] = useState(false);
   
-  // AI functionality state
-  const [aiMode, setAiMode] = useState(false);
+  // Context menu state
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [contextMenuMessage, setContextMenuMessage] = useState<Message | null>(null);
+  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
+  
+  // Selection mode state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMessages, setSelectedMessages] = useState<Set<number>>(new Set());
+  
+  // AI functionality state - Enable by default so bot responds to questions
+  const [aiMode, setAiMode] = useState(true);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiLoadingMessage, setAiLoadingMessage] = useState('');
   
   // Link preview state
   const [linkPreviewLoading, setLinkPreviewLoading] = useState(false);
   const [currentLinkPreview, setCurrentLinkPreview] = useState<any>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
+  
+  // Reply preview state
+  const [replyPreview, setReplyPreview] = useState<Message | null>(null);
   
   // Animation values for each message
   const messageAnimations = useRef<{ [key: number]: Animated.Value }>({});
@@ -223,10 +258,14 @@ const ChatScreen = () => {
     });
   };
 
-  // Predefined tags for quick selection
+  // Predefined tags for quick selection with emojis
   const predefinedTags = [
-    'Work', 'Personal', 'Important', 'Todo', 'Reference', 
-    'Ideas', 'Meeting', 'Project', 'Reminder', 'Document'
+    { name: 'Health', emoji: '🍃' },
+    { name: 'Work', emoji: '💼' }, 
+    { name: 'Fitness', emoji: '💪' },
+    { name: 'Travel', emoji: '✈️' },
+    { name: 'To Read', emoji: '📖' },
+    { name: 'Custom Tag', emoji: '🏷️' }
   ];
 
   const getInitialMessages = (): Message[] => [
@@ -491,6 +530,23 @@ const ChatScreen = () => {
         // Generate AI response if AI mode is enabled
         if (aiMode) {
           setAiLoading(true);
+          setAiLoadingMessage('Reading what you saved...');
+          
+          // Add typing indicator message
+          const typingMessage: Message = {
+            id: generateUniqueId(),
+            content: '...',
+            type: 'text',
+            timestamp: getCurrentTimestamp(),
+            isBot: true,
+          };
+          setMessages(prev => [...prev, typingMessage]);
+          
+          // Scroll to show typing indicator
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 100);
+          
           try {
             // Show extraction stats for debugging
             const stats = chatService.getExtractionStats();
@@ -499,17 +555,22 @@ const ChatScreen = () => {
             // Generate enhanced AI response with full database context
             const aiResponse = await openAIService.generateResponseWithDatabaseContext(inputText);
             
-            // Create AI message for UI
-            const aiMessage: Message = {
-              id: generateUniqueId(),
-              content: aiResponse,
-              type: 'text',
-              timestamp: getCurrentTimestamp(),
-              isBot: true,
-            };
-            
-            // Add AI message to UI
-            setMessages(prev => [...prev, aiMessage]);
+            // Remove typing indicator and add actual response
+            setMessages(prev => {
+              // Remove the typing indicator (last message with "..." content)
+              const withoutTyping = prev.filter(msg => !(msg.isBot && msg.content === '...'));
+              
+              // Add the actual AI response
+              const aiMessage: Message = {
+                id: generateUniqueId(),
+                content: aiResponse,
+                type: 'text',
+                timestamp: getCurrentTimestamp(),
+                isBot: true,
+              };
+              
+              return [...withoutTyping, aiMessage];
+            });
             
             // Save AI response to database
             await openAIService.sendAIResponse(inputText);
@@ -522,15 +583,23 @@ const ChatScreen = () => {
             console.log('🧠 Enhanced AI response with database context generated and saved');
           } catch (aiError) {
             console.error('Error generating AI response:', aiError);
-            // Show a fallback message
-            const fallbackMessage: Message = {
-              id: generateUniqueId(),
-              content: "Sorry, I'm having trouble accessing your content database right now. Please try again later.",
-              type: 'text',
-              timestamp: getCurrentTimestamp(),
-              isBot: true,
-            };
-            setMessages(prev => [...prev, fallbackMessage]);
+            
+            // Remove typing indicator and show fallback message
+            setMessages(prev => {
+              // Remove the typing indicator (last message with "..." content)
+              const withoutTyping = prev.filter(msg => !(msg.isBot && msg.content === '...'));
+              
+              // Add fallback message
+              const fallbackMessage: Message = {
+                id: generateUniqueId(),
+                content: "Sorry, I'm having trouble accessing your content database right now. Please try again later.",
+                type: 'text',
+                timestamp: getCurrentTimestamp(),
+                isBot: true,
+              };
+              
+              return [...withoutTyping, fallbackMessage];
+            });
           } finally {
             setAiLoading(false);
           }
@@ -545,6 +614,7 @@ const ChatScreen = () => {
       }
     }
   };
+
 
   const pickImage = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -724,25 +794,246 @@ const ChatScreen = () => {
     setUploading(false);
   };
 
-  // Handle long press on message to show delete option
-  const handleMessageLongPress = (message: Message) => {
-    if (message.isBot) return; // Don't allow deletion of bot messages
+  // Handle long press on message to show context menu
+  const handleMessageLongPress = (message: Message, event: any) => {
+    if (message.isBot) return; // Don't allow context menu for bot messages
+    
+    // Get touch position for context menu placement
+    const { pageX, pageY } = event.nativeEvent;
+    
+    setContextMenuMessage(message);
+    setContextMenuPosition({ x: pageX, y: pageY });
+    setShowContextMenu(true);
+  };
+
+  // Context menu actions
+  const handleReply = () => {
+    if (!contextMenuMessage) return;
+    
+    // Set the reply preview to show above input
+    setReplyPreview(contextMenuMessage);
+    setInputText('');
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
+  };
+
+  const handleStar = async () => {
+    if (!contextMenuMessage) return;
+    
+    try {
+      // Find the corresponding database message and add a "starred" tag
+      const dbMessages = await chatService.getUserMessages();
+      const dbMessage = dbMessages.find(msg => 
+        msg.content === contextMenuMessage.content && 
+        msg.type === contextMenuMessage.type &&
+        msg.file_url === contextMenuMessage.url
+      );
+
+      if (dbMessage) {
+        // Add "starred" tag to the message
+        const currentTags = dbMessage.tags || [];
+        if (!currentTags.includes('starred')) {
+          const updatedTags = [...currentTags, 'starred'];
+          // Update the message with new tags (you'll need to implement this in ChatService)
+          console.log('⭐ Message starred:', dbMessage.id);
+          Alert.alert('Success', 'Message starred!');
+        } else {
+          Alert.alert('Info', 'Message is already starred');
+        }
+      }
+    } catch (error) {
+      console.error('Error starring message:', error);
+      Alert.alert('Error', 'Failed to star message');
+    }
+    
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
+  };
+
+  const handleShare = async () => {
+    if (!contextMenuMessage) return;
+    
+    try {
+      // Create share content based on message type
+      let shareContent = '';
+      
+      switch (contextMenuMessage.type) {
+        case 'text':
+          shareContent = contextMenuMessage.content;
+          break;
+        case 'link':
+          shareContent = `${contextMenuMessage.content}\n\n${contextMenuMessage.url}`;
+          break;
+        case 'file':
+          shareContent = `Document: ${contextMenuMessage.filename}`;
+          break;
+        case 'image':
+          shareContent = 'Image shared from Blii';
+          break;
+      }
+      
+      console.log('📤 Sharing content:', shareContent);
+      
+      // Try to use React Native's Share API first (works in development builds)
+      try {
+        const { Share } = require('react-native');
+        
+        const result = await Share.share({
+          message: shareContent,
+          title: 'Shared from Blii',
+        });
+        
+        if (result.action === Share.sharedAction) {
+          console.log('📤 Content shared successfully via React Native Share');
+        } else if (result.action === Share.dismissedAction) {
+          console.log('📤 Share dismissed');
+        }
+      } catch (shareError) {
+        console.log('📤 React Native Share not available, falling back to clipboard');
+        
+        // Fallback to clipboard using Expo Clipboard
+        try {
+          const Clipboard = require('expo-clipboard');
+          await Clipboard.setStringAsync(shareContent);
+          
+          Alert.alert(
+            'Content Copied',
+            'The content has been copied to your clipboard. You can now paste it in any app like Messages, Mail, Notes, etc.',
+            [{ text: 'OK' }]
+          );
+          
+          console.log('📤 Content copied to clipboard successfully');
+        } catch (clipboardError) {
+          console.error('Clipboard error:', clipboardError);
+          
+          // Final fallback - show content in alert with copy option
+          Alert.alert(
+            'Share Content',
+            shareContent,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { 
+                text: 'Copy Text', 
+                onPress: () => {
+                  // Manual copy instruction
+                  Alert.alert(
+                    'Copy Manually',
+                    'Please manually copy this text:\n\n' + shareContent,
+                    [{ text: 'OK' }]
+                  );
+                }
+              }
+            ]
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error in share handler:', error);
+      Alert.alert('Error', 'Unable to share content. Please try again.');
+    }
+    
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
+  };
+
+  const handleContextDelete = () => {
+    if (!contextMenuMessage) return;
+    
+    setMessageToDelete(contextMenuMessage);
+    setShowDeleteModal(true);
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
+  };
+
+  const handleSelect = () => {
+    if (!contextMenuMessage) return;
+    
+    // Enable selection mode and select the current message
+    setSelectionMode(true);
+    setSelectedMessages(new Set([contextMenuMessage.id]));
+    
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
+  };
+
+  // Selection mode functions
+  const toggleMessageSelection = (messageId: number) => {
+    setSelectedMessages(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(messageId)) {
+        newSet.delete(messageId);
+      } else {
+        newSet.add(messageId);
+      }
+      return newSet;
+    });
+  };
+
+  const exitSelectionMode = () => {
+    setSelectionMode(false);
+    setSelectedMessages(new Set());
+  };
+
+  const handleSelectionAddTag = () => {
+    if (selectedMessages.size === 0) return;
+    
+    // Show tag modal for selected messages
+    setShowTagModal(true);
+  };
+
+  const handleSelectionDelete = () => {
+    if (selectedMessages.size === 0) return;
     
     Alert.alert(
-      'Delete Message',
-      'What would you like to do with this message?',
+      'Delete Messages',
+      `Are you sure you want to delete ${selectedMessages.size} message${selectedMessages.size > 1 ? 's' : ''}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         { 
           text: 'Delete', 
           style: 'destructive',
-          onPress: () => {
-            setMessageToDelete(message);
-            setShowDeleteModal(true);
+          onPress: async () => {
+            try {
+              // Get all messages to find database IDs
+              const dbMessages = await chatService.getUserMessages();
+              
+              // Delete each selected message
+              for (const messageId of selectedMessages) {
+                const message = messages.find(m => m.id === messageId);
+                if (message) {
+                  const dbMessage = dbMessages.find(msg => 
+                    msg.content === message.content && 
+                    msg.type === message.type &&
+                    msg.file_url === message.url
+                  );
+                  
+                  if (dbMessage) {
+                    await chatService.deleteMessage(dbMessage.id);
+                  }
+                }
+              }
+              
+              // Remove from local state
+              setMessages(prev => prev.filter(msg => !selectedMessages.has(msg.id)));
+              
+              // Exit selection mode
+              exitSelectionMode();
+              
+              Alert.alert('Success', `${selectedMessages.size} message${selectedMessages.size > 1 ? 's' : ''} deleted successfully`);
+            } catch (error) {
+              console.error('Error deleting selected messages:', error);
+              Alert.alert('Error', 'Failed to delete messages. Please try again.');
+            }
           }
         }
       ]
     );
+  };
+
+  // Close context menu when tapping outside
+  const closeContextMenu = () => {
+    setShowContextMenu(false);
+    setContextMenuMessage(null);
   };
 
   // Confirm and delete message
@@ -891,57 +1182,36 @@ const ChatScreen = () => {
       >
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/')}>
-          <Ionicons name="chevron-back" size={24} color="#000" />
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Chat</Text>
-          {aiMode && <Text style={styles.aiModeIndicator}>AI Mode</Text>}
-        </View>
-        <View style={styles.headerRight}>
-          <TouchableOpacity 
-            style={[styles.aiToggle, aiMode && styles.aiToggleActive]} 
-            onPress={() => setAiMode(!aiMode)}
-          >
-            <Ionicons 
-              name="sparkles" 
-              size={16} 
-              color={aiMode ? "#fff" : "#666"} 
-            />
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.clearButton} 
-            onPress={async () => {
-              // Test content extraction with a sample URL
-              await chatService.testContentExtraction('https://www.paulgraham.com/read.html');
-            }}
-          >
-            <Ionicons name="flask" size={20} color="#007AFF" />
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={styles.clearButton} 
-            onPress={async () => {
-              // Display database extracted_text in console
-              await chatService.displayDatabaseExtractedText();
-            }}
-          >
-            <Ionicons name="document-text" size={20} color="#FF9500" />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.clearButton} onPress={extractExistingContent}>
-            <Ionicons name="refresh" size={20} color="#34C759" />
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.clearButton} onPress={clearAllMessages}>
-            <Ionicons name="trash-outline" size={20} color="#FF3B30" />
-          </TouchableOpacity>
-        </View>
+        {selectionMode ? (
+          <>
+            <Text style={styles.selectionTitle}>Select</Text>
+            <TouchableOpacity style={styles.cancelButton} onPress={exitSelectionMode}>
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/')}>
+              <Ionicons name="chevron-back" size={24} color="#000" />
+            </TouchableOpacity>
+            <View style={styles.headerCenter}>
+              <Text style={styles.headerTitle}>Chat</Text>
+              {aiMode && <Text style={styles.aiModeIndicator}>AI Mode</Text>}
+            </View>
+            <View style={styles.headerRight}>
+              <TouchableOpacity style={styles.clearButton} onPress={clearAllMessages}>
+                <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </View>
 
       {/* Welcome Message */}
       <View style={styles.welcomeContainer}>
         {aiLoading && (
           <View style={styles.aiLoadingContainer}>
-            <Text style={styles.aiLoadingText}>🤖 Bill is thinking...</Text>
+            <Text style={styles.aiLoadingText}>🤖 Blii is thinking...</Text>
           </View>
         )}
         
@@ -963,20 +1233,40 @@ const ChatScreen = () => {
             <TouchableOpacity
               key={`message-${index}-${message.id}`}
               style={[styles.messageContainer, message.isBot ? styles.botMessageContainer : styles.userMessageContainer]}
-              onLongPress={() => handleMessageLongPress(message)}
+              onLongPress={(event) => handleMessageLongPress(message, event)}
+              onPress={() => {
+                if (selectionMode && !message.isBot) {
+                  toggleMessageSelection(message.id);
+                }
+              }}
               delayLongPress={500}
               activeOpacity={0.7}
             >
+              {/* Selection circle for user messages when in selection mode */}
+              {selectionMode && !message.isBot && (
+                <TouchableOpacity 
+                  style={styles.selectionCircle}
+                  onPress={() => toggleMessageSelection(message.id)}
+                >
+                  <View style={[
+                    styles.selectionCircleInner,
+                    selectedMessages.has(message.id) && styles.selectionCircleSelected
+                  ]}>
+                    {selectedMessages.has(message.id) && (
+                      <Ionicons name="checkmark" size={16} color="#fff" />
+                    )}
+                  </View>
+                </TouchableOpacity>
+              )}
+              
               <View style={[styles.messageBubble, message.isBot ? styles.botMessage : styles.userMessage]}>
                 {/* Only show text for non-image messages */}
                 {message.type !== 'image' && message.type !== 'link' && (
-                  <Text style={[styles.messageText, message.isBot ? styles.botMessageText : styles.userMessageText]}>{message.content}</Text>
-                )}
-                {/* For link messages, strip out '[Content extracted: ...]' from the display */}
-                {message.type === 'link' && (
-                  <Text style={[styles.messageText, message.isBot ? styles.botMessageText : styles.userMessageText]}>
-                    {message.content.replace(/\[Content extracted:.*?\]/, '').trim()}
-                  </Text>
+                  message.content === '...' && message.isBot ? (
+                    <TypingIndicator />
+                  ) : (
+                    <Text style={[styles.messageText, message.isBot ? styles.botMessageText : styles.userMessageText]}>{message.content}</Text>
+                  )
                 )}
                 {/* For image messages, only show the image (and tags below) */}
                 {message.type === 'image' && message.url && (
@@ -992,37 +1282,63 @@ const ChatScreen = () => {
                   </View>
                 )}
                 {message.type === 'link' && message.linkPreview && (
-                  <TouchableOpacity 
-                    style={styles.linkPreview}
-                    onPress={() => {
-                      // Open link in browser
-                      if (message.url) {
-                        console.log('Opening link:', message.url);
-                        Linking.openURL(message.url);
-                      }
-                    }}
-                  >
-                    {message.linkPreview.image && (
+                  <View style={styles.linkMessageContainer}>
+                    {/* Image/Preview first */}
+                    <TouchableOpacity 
+                      style={styles.linkPreview}
+                      onPress={() => {
+                        // Open link in browser
+                        if (message.url) {
+                          console.log('Opening link:', message.url);
+                          Linking.openURL(message.url);
+                        }
+                      }}
+                    >
                       <Image 
-                        source={{ uri: message.linkPreview.image }} 
+                        source={message.linkPreview.image ? { 
+                          uri: message.linkPreview.image,
+                          headers: {
+                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+                          }
+                        } : require('../assets/images/react-logo.png')} 
                         style={styles.linkPreviewImage}
                         resizeMode="cover"
+                        onError={(error) => {
+                          console.log('❌ Image load error for:', message.linkPreview?.image, error.nativeEvent.error);
+                        }}
+                        onLoad={() => {
+                          console.log('✅ Image loaded successfully:', message.linkPreview?.image);
+                        }}
                       />
-                    )}
-                    <View style={styles.linkPreviewContent}>
-                      <Text style={styles.linkPreviewTitle} numberOfLines={2}>
-                        {message.linkPreview.title || 'Link'}
-                      </Text>
-                      {message.linkPreview.description && (
-                        <Text style={styles.linkPreviewDescription} numberOfLines={2}>
-                          {message.linkPreview.description}
+                      <View style={styles.linkPreviewContent}>
+                        <Text style={styles.linkPreviewTitle} numberOfLines={2}>
+                          {message.linkPreview.title || 'Link'}
                         </Text>
-                      )}
-                      <Text style={styles.linkPreviewDomain}>
-                        {message.linkPreview.domain || 'Link'}
+                        {message.linkPreview.description && (
+                          <Text style={styles.linkPreviewDescription} numberOfLines={2}>
+                            {message.linkPreview.description}
+                          </Text>
+                        )}
+                        <Text style={styles.linkPreviewDomain}>
+                          {message.linkPreview.domain || 'Link'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                    
+                    {/* URL below the preview, underlined */}
+                    <TouchableOpacity 
+                      onPress={() => {
+                        if (message.url) {
+                          Linking.openURL(message.url);
+                        }
+                      }}
+                      style={styles.linkUrlContainer}
+                    >
+                      <Text style={styles.linkUrlText}>
+                        {message.url}
                       </Text>
-                    </View>
-                  </TouchableOpacity>
+                    </TouchableOpacity>
+                  </View>
                 )}
                 {/* Display tags */}
                 {message.tags && message.tags.length > 0 && (
@@ -1059,6 +1375,92 @@ const ChatScreen = () => {
             <Ionicons name="document" size={20} color="#007AFF" />
             <Text style={styles.actionButtonText}>Upload a doc</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Reply Preview Above Input */}
+      {replyPreview && (
+        <View style={styles.replyPreviewContainer}>
+          {/* Header with "Replying to" above everything */}
+          <View style={styles.replyPreviewHeader}>
+            <Ionicons name="arrow-undo" size={14} color="#007AFF" />
+            <Text style={styles.replyPreviewLabel}>Replying to</Text>
+          </View>
+          
+          <View style={styles.replyPreview}>
+            {/* Main content area with image and text */}
+            <View style={styles.replyPreviewMainContent}>
+              {/* Image on the left */}
+              {replyPreview.type === 'image' && replyPreview.url && (
+                <Image 
+                  source={{ uri: replyPreview.url }} 
+                  style={styles.replyPreviewImage}
+                  resizeMode="cover"
+                />
+              )}
+              {replyPreview.type === 'link' && replyPreview.linkPreview?.image && (
+                <Image 
+                  source={{ uri: replyPreview.linkPreview.image }} 
+                  style={styles.replyPreviewImage}
+                  resizeMode="cover"
+                />
+              )}
+              {replyPreview.type === 'file' && (
+                <View style={styles.replyPreviewFileIcon}>
+                  <Ionicons name="document" size={24} color="#666" />
+                </View>
+              )}
+              
+              {/* Text content on the right */}
+              <View style={styles.replyPreviewTextContent}>
+                {replyPreview.type === 'link' && replyPreview.linkPreview ? (
+                  <>
+                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
+                      {replyPreview.linkPreview.title || 'Link'}
+                    </Text>
+                    <Text style={styles.replyPreviewDomain}>
+                      {replyPreview.linkPreview.domain || 'Link'}
+                    </Text>
+                  </>
+                ) : replyPreview.type === 'file' ? (
+                  <>
+                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
+                      {replyPreview.filename || 'Document'}
+                    </Text>
+                    <Text style={styles.replyPreviewDomain}>
+                      Document
+                    </Text>
+                  </>
+                ) : replyPreview.type === 'image' ? (
+                  <>
+                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
+                      Image
+                    </Text>
+                    <Text style={styles.replyPreviewDomain}>
+                      Photo
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
+                      {replyPreview.content}
+                    </Text>
+                    <Text style={styles.replyPreviewDomain}>
+                      Message
+                    </Text>
+                  </>
+                )}
+              </View>
+              
+              {/* Close button */}
+              <TouchableOpacity 
+                style={styles.replyPreviewClose}
+                onPress={() => setReplyPreview(null)}
+              >
+                <Ionicons name="close" size={18} color="#666" />
+              </TouchableOpacity>
+            </View>
+          </View>
         </View>
       )}
 
@@ -1115,8 +1517,36 @@ const ChatScreen = () => {
         </View>
       )}
 
+      {/* Selection Mode Bottom Bar */}
+      {selectionMode && (
+        <View style={styles.selectionBottomBar}>
+          <Text style={styles.selectionCount}>
+            {selectedMessages.size} Selected
+          </Text>
+          <View style={styles.selectionActions}>
+            <TouchableOpacity 
+              style={styles.selectionActionButton}
+              onPress={handleSelectionAddTag}
+              disabled={selectedMessages.size === 0}
+            >
+              <Ionicons name="add" size={20} color="#007AFF" />
+              <Text style={styles.selectionActionText}>Add tag</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.selectionActionButton}
+              onPress={handleSelectionDelete}
+              disabled={selectedMessages.size === 0}
+            >
+              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+              <Text style={[styles.selectionActionText, { color: '#FF3B30' }]}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* Input Area */}
-      <SafeAreaContextView edges={['bottom']} style={styles.inputContainer}>
+      {!selectionMode && (
+        <SafeAreaContextView edges={['bottom']} style={styles.inputContainer}>
         <View style={styles.inputWrapper}>
           <TouchableOpacity 
             style={styles.attachmentButton} 
@@ -1157,84 +1587,82 @@ const ChatScreen = () => {
             />
           </TouchableOpacity>
         </View>
-      </SafeAreaContextView>
+        </SafeAreaContextView>
+      )}
 
-      {/* Tag Modal */}
+      {/* Tag Modal - Bottom Sheet Style */}
       <Modal
         visible={showTagModal}
         animationType="slide"
         transparent={true}
         onRequestClose={cancelTagging}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Tags</Text>
-              <TouchableOpacity onPress={cancelTagging} style={styles.modalCloseButton}>
+        <View style={styles.bottomSheetOverlay}>
+          <TouchableOpacity 
+            style={styles.bottomSheetBackdrop}
+            activeOpacity={1}
+            onPress={cancelTagging}
+          />
+          <View style={styles.bottomSheetContent}>
+            {/* Handle bar */}
+            <View style={styles.bottomSheetHandle} />
+            
+            <View style={styles.bottomSheetHeader}>
+              <Text style={styles.bottomSheetTitle}>Add Tag</Text>
+              <TouchableOpacity onPress={cancelTagging} style={styles.bottomSheetCloseButton}>
                 <Ionicons name="close" size={24} color="#666" />
               </TouchableOpacity>
             </View>
 
             {/* Tag input */}
-            <View style={styles.tagInputContainer}>
+            <View style={styles.bottomSheetTagInput}>
               <TextInput
-                style={styles.tagInput}
-                placeholder="Enter a tag..."
+                style={styles.bottomSheetInput}
+                placeholder="Type to add new tag..."
                 value={currentTagInput}
                 onChangeText={setCurrentTagInput}
                 onSubmitEditing={handleTagInputSubmit}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
-              <TouchableOpacity
-                style={styles.addTagButton}
-                onPress={handleTagInputSubmit}
-                disabled={!currentTagInput.trim()}
-              >
-                <Ionicons 
-                  name="add" 
-                  size={20} 
-                  color={currentTagInput.trim() ? "#007AFF" : "#999"} 
-                />
-              </TouchableOpacity>
             </View>
 
-            {/* Predefined tags */}
-            <View style={styles.predefinedTagsContainer}>
-              <Text style={styles.predefinedTagsTitle}>Quick Tags:</Text>
-              <View style={styles.predefinedTagsGrid}>
+
+            {/* All Tags Section */}
+            <View style={styles.allTagsSection}>
+              <Text style={styles.sectionTitle}>All</Text>
+              <View style={styles.allTagsGrid}>
                 {predefinedTags.map((tag) => (
                   <TouchableOpacity
-                    key={tag}
+                    key={tag.name}
                     style={[
-                      styles.predefinedTag,
-                      selectedTags.includes(tag) && styles.predefinedTagSelected
+                      styles.allTag,
+                      selectedTags.includes(tag.name) && styles.allTagSelected
                     ]}
-                    onPress={() => addTag(tag)}
-                    disabled={selectedTags.includes(tag)}
+                    onPress={() => addTag(tag.name)}
+                    disabled={selectedTags.includes(tag.name)}
                   >
                     <Text style={[
-                      styles.predefinedTagText,
-                      selectedTags.includes(tag) && styles.predefinedTagTextSelected
+                      styles.allTagText,
+                      selectedTags.includes(tag.name) && styles.allTagTextSelected
                     ]}>
-                      {tag}
+                      {tag.emoji} {tag.name}
                     </Text>
                   </TouchableOpacity>
                 ))}
               </View>
             </View>
 
-            {/* Selected tags */}
+            {/* Selected tags display */}
             {selectedTags.length > 0 && (
-              <View style={styles.selectedTagsContainer}>
-                <Text style={styles.selectedTagsTitle}>Selected Tags:</Text>
-                <View style={styles.selectedTagsGrid}>
+              <View style={styles.selectedTagsDisplay}>
+                <View style={styles.selectedTagsList}>
                   {selectedTags.map((tag) => (
-                    <View key={tag} style={styles.selectedTag}>
-                      <Text style={styles.selectedTagText}>#{tag}</Text>
+                    <View key={tag} style={styles.selectedTagChip}>
+                      <Text style={styles.selectedTagChipText}>#{tag}</Text>
                       <TouchableOpacity
                         onPress={() => removeTag(tag)}
-                        style={styles.removeTagButton}
+                        style={styles.removeTagChip}
                       >
                         <Ionicons name="close-circle" size={16} color="#666" />
                       </TouchableOpacity>
@@ -1244,19 +1672,14 @@ const ChatScreen = () => {
               </View>
             )}
 
-            {/* Modal actions */}
-            <View style={styles.modalActions}>
+            {/* Bottom action button */}
+            <View style={styles.bottomSheetActions}>
               <TouchableOpacity
-                style={styles.modalCancelButton}
-                onPress={cancelTagging}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalSaveButton}
+                style={styles.bottomSheetSaveButton}
                 onPress={finalizePendingMessage}
               >
-                <Text style={styles.modalSaveText}>
+                <Ionicons name="checkmark" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.bottomSheetSaveText}>
                   {selectedTags.length > 0 ? `Save with ${selectedTags.length} tag(s)` : 'Save without tags'}
                 </Text>
               </TouchableOpacity>
@@ -1320,6 +1743,55 @@ const ChatScreen = () => {
           </View>
         </View>
       </Modal>
+
+      {/* Context Menu Modal */}
+      <Modal
+        visible={showContextMenu}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={closeContextMenu}
+      >
+        <TouchableOpacity 
+          style={styles.contextMenuOverlay}
+          activeOpacity={1}
+          onPress={closeContextMenu}
+        >
+          <View 
+            style={[
+              styles.contextMenu,
+              {
+                top: Math.max(100, Math.min(contextMenuPosition.y - 150, 600)),
+                left: Math.max(20, Math.min(contextMenuPosition.x - 100, 250))
+              }
+            ]}
+          >
+            <TouchableOpacity style={styles.contextMenuItem} onPress={handleReply}>
+              <Text style={styles.contextMenuText}>Reply</Text>
+              <Ionicons name="arrow-undo" size={20} color="#000" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.contextMenuItem} onPress={handleStar}>
+              <Text style={styles.contextMenuText}>Star</Text>
+              <Ionicons name="star-outline" size={20} color="#000" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.contextMenuItem} onPress={handleShare}>
+              <Text style={styles.contextMenuText}>Share</Text>
+              <Ionicons name="share-outline" size={20} color="#000" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.contextMenuItem} onPress={handleContextDelete}>
+              <Text style={[styles.contextMenuText, { color: '#FF3B30' }]}>Delete</Text>
+              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={[styles.contextMenuItem, styles.contextMenuItemLast]} onPress={handleSelect}>
+              <Text style={[styles.contextMenuText, { color: '#007AFF' }]}>Select</Text>
+              <Ionicons name="checkmark-circle-outline" size={20} color="#007AFF" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
       </KeyboardAvoidingView>
     </RNSafeAreaView>
   );
@@ -1328,7 +1800,7 @@ const ChatScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff', // White background for everything above the header
   },
   header: {
     flexDirection: 'row',
@@ -1336,6 +1808,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: '#fefefe', // Updated background color for chat tab/header
   },
   backButton: {
     padding: 5,
@@ -1354,6 +1827,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     alignItems: 'center',
+    backgroundColor: '#f3f5fc', // Match main chat area background
   },
   folderIconContainer: {
     alignItems: 'center',
@@ -1377,9 +1851,11 @@ const styles = StyleSheet.create({
   messagesContainer: {
     flex: 1,
     paddingHorizontal: 20,
+    backgroundColor: '#f3f5fc', // Main chat area background
   },
   scrollView: {
     flex: 1,
+    backgroundColor: '#f3f5fc', // Main chat area background
   },
   scrollContent: {
     paddingVertical: 20,
@@ -1399,14 +1875,14 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderRadius: 20,
+    borderRadius: 10,
   },
   botMessage: {
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#fff', // White for bot messages
     borderBottomLeftRadius: 4,
   },
   userMessage: {
-    backgroundColor: '#007AFF',
+    backgroundColor: '#CCE0FE', // New color for user messages
     borderBottomRightRadius: 4,
   },
   messageText: {
@@ -1417,7 +1893,7 @@ const styles = StyleSheet.create({
     color: '#000',
   },
   userMessageText: {
-    color: '#fff',
+    color: '#222', // Dark text for user messages
   },
   timestamp: {
     fontSize: 12,
@@ -1483,10 +1959,12 @@ const styles = StyleSheet.create({
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    backgroundColor: '#f8f8f8',
+    backgroundColor: '#fff', // White background for input box
     borderRadius: 24,
     paddingHorizontal: 4,
     paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: '#E0E0E0', // Subtle border
   },
   attachmentButton: {
     padding: 8,
@@ -1497,6 +1975,9 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     fontSize: 16,
     maxHeight: 100,
+    backgroundColor: '#fff', // Ensure input itself is white
+    color: '#222', // Dark text for contrast
+    borderRadius: 16,
   },
   sendButton: {
     padding: 8,
@@ -1514,28 +1995,31 @@ const styles = StyleSheet.create({
   tagBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 4, // Square corners like in the design
     marginRight: 6,
     marginBottom: 4,
+    backgroundColor: '#ffffff', // White background like in the design
     borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
   tagBadgeBot: {
-    backgroundColor: 'rgba(0, 122, 255, 0.15)',
-    borderColor: 'rgba(0, 122, 255, 0.3)',
+    backgroundColor: '#ffffff',
+    borderColor: '#E0E0E0',
   },
   tagBadgeUser: {
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderColor: 'rgba(255, 255, 255, 0.4)',
+    backgroundColor: '#ffffff',
+    borderColor: '#E0E0E0',
   },
   tagText: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '400',
+    color: '#666666', // Grey color, not bold
   },
   tagTextBot: {
-    color: '#007AFF',
+    color: '#666666',
   },
   tagTextUser: {
-    color: '#ffffff',
+    color: '#666666',
   },
   modalOverlay: {
     flex: 1,
@@ -1785,7 +2269,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     padding: 12,
     backgroundColor: '#f8f9fa',
-    borderRadius: 12,
+    borderRadius: 0,
     marginTop: 8,
     borderWidth: 1,
     borderColor: '#e9ecef',
@@ -1811,7 +2295,7 @@ const styles = StyleSheet.create({
   },
   linkPreviewTitle: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '400',
     color: '#1a1a1a',
     marginBottom: 4,
     lineHeight: 20,
@@ -1947,6 +2431,402 @@ const styles = StyleSheet.create({
     padding: 12,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // Context menu styles
+  contextMenuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  contextMenu: {
+    position: 'absolute',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    paddingVertical: 12,
+    minWidth: 200,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 12,
+  },
+  contextMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#E5E5E7',
+  },
+  contextMenuText: {
+    fontSize: 17,
+    fontWeight: '400',
+    color: '#000000',
+    flex: 1,
+  },
+  contextMenuItemLast: {
+    borderBottomWidth: 0,
+  },
+  // Selection mode styles
+  selectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000',
+    flex: 1,
+  },
+  cancelButton: {
+    padding: 8,
+  },
+  cancelButtonText: {
+    fontSize: 16,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  // Selection circle styles
+  selectionCircle: {
+    position: 'absolute',
+    left: -40,
+    top: 10,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  selectionCircleInner: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: '#007AFF',
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  selectionCircleSelected: {
+    backgroundColor: '#007AFF',
+  },
+  // Selection bottom bar styles
+  selectionBottomBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+  },
+  selectionCount: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  selectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 24,
+  },
+  selectionActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  selectionActionText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#007AFF',
+  },
+  // Reply preview styles
+  replyPreviewContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    backgroundColor: '#ffffff',
+  },
+  replyPreview: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    borderLeftWidth: 4,
+    borderLeftColor: '#007AFF',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  replyPreviewContent: {
+    flex: 1,
+    padding: 12,
+  },
+  replyPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+    gap: 6,
+  },
+  replyPreviewLabel: {
+    fontSize: 12,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  replyPreviewText: {
+    fontSize: 14,
+    color: '#333',
+    marginBottom: 4,
+    lineHeight: 18,
+  },
+  replyPreviewType: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  replyPreviewClose: {
+    padding: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // New reply preview styles for image-left layout
+  replyPreviewImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginRight: 12,
+    backgroundColor: '#f0f0f0',
+  },
+  replyPreviewFileIcon: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginRight: 12,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  replyPreviewTextContent: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingRight: 12,
+  },
+  replyPreviewTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000',
+    marginBottom: 4,
+    lineHeight: 20,
+  },
+  replyPreviewDomain: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '400',
+  },
+  // Main content area for reply preview
+  replyPreviewMainContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  // Link message container styles
+  linkMessageContainer: {
+    marginTop: 8,
+  },
+  linkUrlContainer: {
+    marginTop: 8,
+    paddingTop: 8,
+  },
+  linkUrlText: {
+    fontSize: 14,
+    color: '#000000',
+    textDecorationLine: 'underline',
+    fontWeight: '400',
+  },
+  // Typing indicator styles
+  typingIndicator: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  typingText: {
+    fontSize: 16,
+    color: '#666',
+    fontStyle: 'italic',
+  },
+  // Bottom sheet styles
+  bottomSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  bottomSheetBackdrop: {
+    flex: 1,
+  },
+  bottomSheetContent: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingBottom: 34, // Safe area padding
+    maxHeight: '80%',
+  },
+  bottomSheetHandle: {
+    width: 36,
+    height: 4,
+    backgroundColor: '#D1D5DB',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  bottomSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+  },
+  bottomSheetTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#000',
+  },
+  bottomSheetCloseButton: {
+    padding: 4,
+  },
+  bottomSheetTagInput: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  bottomSheetInput: {
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 12,
+    fontSize: 16,
+    backgroundColor: '#F9FAFB',
+    color: '#111827',
+  },
+  suggestionsSection: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#6B7280',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  suggestionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  suggestionTag: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#D1FAE5',
+    borderRadius: 20,
+    backgroundColor: '#ECFDF5',
+  },
+  suggestionTagSelected: {
+    backgroundColor: '#10B981',
+    borderColor: '#10B981',
+  },
+  suggestionTagText: {
+    fontSize: 14,
+    color: '#065F46',
+    fontWeight: '500',
+  },
+  suggestionTagTextSelected: {
+    color: '#fff',
+  },
+  allTagsSection: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+  },
+  allTagsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  allTag: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+    borderRadius: 20,
+    backgroundColor: '#F9FAFB',
+  },
+  allTagSelected: {
+    backgroundColor: '#3B82F6',
+    borderColor: '#3B82F6',
+  },
+  allTagText: {
+    fontSize: 14,
+    color: '#374151',
+    fontWeight: '500',
+  },
+  allTagTextSelected: {
+    color: '#fff',
+  },
+  selectedTagsDisplay: {
+    paddingHorizontal: 20,
+    marginBottom: 16,
+  },
+  selectedTagsList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  selectedTagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#EBF8FF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+  },
+  selectedTagChipText: {
+    fontSize: 14,
+    color: '#1E40AF',
+    fontWeight: '500',
+    marginRight: 6,
+  },
+  removeTagChip: {
+    padding: 2,
+  },
+  bottomSheetActions: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  bottomSheetSaveButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#3B82F6',
+    paddingVertical: 16,
+    borderRadius: 12,
+  },
+  bottomSheetSaveText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
   },
 });
 

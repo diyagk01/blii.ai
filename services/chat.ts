@@ -158,23 +158,36 @@ class ChatService {
     }
   }
 
-  // Analyze content after upload (lazy import to avoid circular dependencies)
-  private async analyzeUploadedContent(type: 'image' | 'file', url: string, filename?: string): Promise<string | undefined> {
+  // Analyze content after upload using superfast image analyzer
+  private async analyzeUploadedContent(type: 'image' | 'file', url: string, filename?: string): Promise<{ description: string; tags: string[] } | undefined> {
     try {
-      // Lazy import OpenAI service to avoid circular dependency
-      const OpenAIService = await import('./openai');
-      const openAIService = OpenAIService.default.getInstance();
-      
       if (type === 'image') {
-        console.log('🔍 Triggering AI image analysis for uploaded image...');
-        const analysis = await openAIService.analyzeImageContent(url);
-        console.log('✅ Image analysis completed and stored');
-        return analysis;
+        console.log('⚡ Starting superfast image analysis for uploaded image...');
+        
+        // Use the new FastImageAnalyzer for lightning-fast results
+        const FastImageAnalyzer = await import('./fast-image-analyzer');
+        const fastAnalyzer = FastImageAnalyzer.default.getInstance();
+        
+        const analysis = await fastAnalyzer.analyzeImageFast(url);
+        const description = fastAnalyzer.generateDescription(analysis);
+        const tags = fastAnalyzer.generateTags(analysis);
+        
+        console.log(`⚡ Superfast image analysis completed in ${analysis.processingTime}ms`);
+        console.log('📝 Generated description:', description.substring(0, 100) + '...');
+        console.log('🏷️ Generated tags:', tags);
+        
+        return { description, tags };
       } else if (type === 'file' && filename) {
         console.log('🔍 Triggering AI document analysis for uploaded file...');
+        
+        // Keep using OpenAI for document analysis (files need different handling)
+        const OpenAIService = await import('./openai');
+        const openAIService = OpenAIService.default.getInstance();
+        
         const analysis = await openAIService.analyzeDocumentContent(url, filename);
         console.log('✅ Document analysis completed and stored');
-        return analysis;
+        
+        return { description: analysis, tags: [] };
       }
     } catch (error) {
       console.error('❌ Error analyzing uploaded content:', error);
@@ -409,7 +422,7 @@ class ChatService {
     }
   }
 
-  // Send image message with automatic AI analysis
+  // Send image message with user-selected tags only
   async sendImageMessage(uri: string, tags?: string[]): Promise<ChatMessage> {
     try {
       const user = await this.getCurrentUser();
@@ -440,17 +453,9 @@ class ChatService {
       const filename = `image_${Date.now()}.${extension}`;
       const { url, path } = await this.uploadFile(uri, filename, mimeType);
       
-      // Trigger AI analysis in background (don't wait for it)
-      let aiAnalysis: string | undefined;
-      try {
-        aiAnalysis = await this.analyzeUploadedContent('image', url);
-      } catch (error) {
-        console.log('AI analysis failed, continuing without it:', error);
-      }
-      
       const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
         user_id: user.id,
-        content: aiAnalysis ? `Image shared - ${aiAnalysis.substring(0, 100)}...` : 'Image shared',
+        content: 'Image shared',
         type: 'image',
         timestamp: new Date().toLocaleTimeString('en-US', { 
           hour12: true, 
@@ -467,11 +472,6 @@ class ChatService {
 
       const savedMessage = await this.saveMessage(messageData);
       
-      // Store AI analysis separately if available
-      if (aiAnalysis) {
-        console.log('📝 AI analysis stored with image message');
-      }
-      
       return savedMessage;
     } catch (error) {
       console.error('Send image message error:', error);
@@ -479,7 +479,7 @@ class ChatService {
     }
   }
 
-  // Send file message with automatic AI analysis
+  // Send file message with user-selected tags only
   async sendFileMessage(uri: string, filename: string, fileType: string, fileSize: number, tags?: string[]): Promise<ChatMessage> {
     try {
       const user = await this.getCurrentUser();
@@ -487,17 +487,9 @@ class ChatService {
       // Upload file first
       const { url, path } = await this.uploadFile(uri, filename, fileType);
       
-      // Trigger AI analysis in background (don't wait for it)
-      let aiAnalysis: string | undefined;
-      try {
-        aiAnalysis = await this.analyzeUploadedContent('file', url, filename);
-      } catch (error) {
-        console.log('AI analysis failed, continuing without it:', error);
-      }
-      
       const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
         user_id: user.id,
-        content: aiAnalysis ? `Document shared - ${aiAnalysis.substring(0, 100)}...` : 'Document shared',
+        content: 'Document shared',
         type: 'file',
         timestamp: new Date().toLocaleTimeString('en-US', { 
           hour12: true, 
@@ -515,11 +507,6 @@ class ChatService {
 
       const savedMessage = await this.saveMessage(messageData);
       
-      // Store AI analysis separately if available
-      if (aiAnalysis) {
-        console.log('📝 AI analysis stored with document message');
-      }
-      
       return savedMessage;
     } catch (error) {
       console.error('Send file message error:', error);
@@ -532,18 +519,74 @@ class ChatService {
     try {
       console.log('🔗 Sending link message with Perplexity content extraction:', url);
       
-      // Use the enhanced content extraction method for links
-      // This will handle Perplexity extraction and database storage
-      const savedMessage = await this.saveMessageWithContentExtraction(
-        content,
-        'link',
-        {
-          fileUrl: url,
-          tags: tags
+      const user = await this.getCurrentUser();
+      const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      let extractedContent: ExtractedContent | null = null;
+
+      try {
+        // Extract content from web article using Perplexity
+        console.log('🔗 Extracting web article content from:', url);
+        extractedContent = await contentExtractor.extractWebArticle(url);
+        
+        if (extractedContent) {
+          console.log('📝 Extracted content details:', {
+            title: extractedContent.title,
+            textLength: extractedContent.content.length,
+            wordCount: extractedContent.content.split(' ').length,
+            author: extractedContent.author,
+            publish_date: extractedContent.publish_date
+          });
+
+          // Store in temporary storage
+          await this.tempStore.storeContent(messageId, {
+            messageId,
+            extractedContent,
+            timestamp: Date.now()
+          });
+          
+          console.log('✅ Content extracted and stored temporarily');
         }
-      );
+      } catch (error) {
+        console.error('❌ Content extraction failed:', error);
+        // Continue without extracted content
+      }
+
+      // Prepare message data - keep original content, don't modify it
+      const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
+        content: content, // Keep original content unchanged
+        type: 'link',
+        user_id: user.id,
+        is_bot: false,
+        tags: tags || [],
+        timestamp: new Date().toLocaleTimeString(),
+        file_url: url, // Keep original URL unchanged
+        // Extracted content fields
+        extracted_text: extractedContent?.full_text || extractedContent?.content || undefined,
+        extracted_title: extractedContent?.title || undefined,
+        extracted_author: extractedContent?.author || undefined,
+        extracted_excerpt: extractedContent?.summary || undefined,
+        extraction_status: extractedContent ? 'completed' : 'not_attempted',
+        word_count: extractedContent ? extractedContent.content.split(' ').length : undefined
+      };
+
+      console.log('📄 Final message data for database:', {
+        content: messageData.content,
+        file_url: messageData.file_url,
+        extracted_text_length: messageData.extracted_text?.length || 0,
+        extracted_title: messageData.extracted_title,
+        extraction_status: messageData.extraction_status,
+        word_count: messageData.word_count
+      });
+
+      // Save to database
+      const savedMessage = await this.saveMessage(messageData);
       
-      console.log('🔗 Link message saved with Perplexity content extraction, ID:', savedMessage.id);
+      // Clean up temporary storage
+      if (extractedContent) {
+        await this.tempStore.removeContent(messageId);
+      }
+
+      console.log('🔗 Link message saved with content extraction, ID:', savedMessage.id);
       return savedMessage;
     } catch (error) {
       console.error('Send link message error:', error);

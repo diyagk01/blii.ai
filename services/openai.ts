@@ -20,7 +20,7 @@ class OpenAIService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -107,72 +107,110 @@ class OpenAIService {
     }
   }
 
-  // Enhanced search that includes temporary extracted content and Perplexity search
+  // Enhanced search that uses database extracted_text directly
   private async searchRelevantContentWithTemp(query: string, allMessages: ChatMessage[], extractedContent: any[]): Promise<ChatMessage[]> {
     try {
-      console.log('🔎 Searching for relevant content with extracted data and Perplexity...');
+      console.log('🔎 DEBUGGING: Searching for relevant content in database extracted_text...');
+      console.log('🔎 DEBUGGING: Query:', query);
+      console.log('🔎 DEBUGGING: Total messages to search:', allMessages.length);
       
       // Extract keywords from user query
       const keywords = await this.extractKeywords(query);
-      console.log('🏷️ Extracted keywords:', keywords);
+      console.log('🏷️ DEBUGGING: Extracted keywords:', keywords);
       
-      // Search in temporary extracted content first
-      console.log('🔍 Searching in extracted content. Available items:', extractedContent.length);
-      extractedContent.forEach((item, index) => {
-        console.log(`📄 Item ${index + 1}:`, {
-          title: item.title,
-          wordCount: item.wordCount,
-          type: item.type
+      // Search directly in database messages with extracted_text
+      const messagesWithExtractedText = allMessages.filter(msg => 
+        msg.extracted_text && msg.extracted_text.length > 100
+      );
+      
+      console.log('🔍 DEBUGGING: Found', messagesWithExtractedText.length, 'messages with extracted_text in database');
+      
+      // Log details of messages with extracted text
+      messagesWithExtractedText.forEach((msg, index) => {
+        console.log(`📄 DEBUGGING: Message ${index + 1} with extracted_text:`, {
+          id: msg.id,
+          type: msg.type,
+          title: msg.extracted_title,
+          textLength: msg.extracted_text?.length,
+          wordCount: msg.word_count,
+          contentPreview: msg.content.substring(0, 100),
+          extractedTextPreview: msg.extracted_text?.substring(0, 200) + '...'
         });
       });
       
-      const tempMatches = extractedContent.filter(item => {
-        const searchText = (item.text + ' ' + (item.title || '') + ' ' + (item.author || '')).toLowerCase();
-        return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
-      });
-      
-      console.log('🎯 Found matches in extracted content:', tempMatches.length);
-
-      // Convert temp matches to message format for consistency
-      const tempAsMessages = tempMatches.map(item => {
-        console.log('🔄 Converting temp item to message format:', {
-          title: item.title,
-          textLength: item.text?.length,
-          wordCount: item.wordCount,
-          type: item.type
+      // Search in extracted_text content from database
+      const extractedTextMatches = messagesWithExtractedText.filter(msg => {
+        const searchText = (
+          (msg.extracted_text || '') + ' ' + 
+          (msg.extracted_title || '') + ' ' + 
+          (msg.extracted_author || '') + ' ' +
+          (msg.content || '')
+        ).toLowerCase();
+        
+        console.log(`🔍 DEBUGGING: Searching in message ${msg.id} with search text length:`, searchText.length);
+        
+        const hasKeywordMatch = keywords.some(keyword => {
+          const match = searchText.includes(keyword.toLowerCase());
+          console.log(`🔍 DEBUGGING: Keyword "${keyword}" match in message ${msg.id}:`, match);
+          return match;
         });
         
-        return {
-          id: item.messageId || `temp_${Date.now()}`,
-          content: `${item.title || 'Extracted Content'}: ${item.text.substring(0, 200)}...`,
-          type: item.type,
-          extracted_text: item.text,
-          extracted_title: item.title,
-          extracted_author: item.author,
-          word_count: item.wordCount,
-          filename: item.filename,
-          file_url: item.url,
-          tags: item.tags,
-          created_at: item.timestamp,
-          user_id: '',
-          timestamp: '',
-          is_bot: false,
-          updated_at: item.timestamp
-        };
+        if (hasKeywordMatch) {
+          console.log('🎯 DEBUGGING: Found match in extracted_text:', {
+            id: msg.id,
+            title: msg.extracted_title,
+            textLength: msg.extracted_text?.length,
+            wordCount: msg.word_count,
+            type: msg.type,
+            matchingKeywords: keywords.filter(k => searchText.includes(k.toLowerCase()))
+          });
+        }
+        
+        return hasKeywordMatch;
       });
+      
+      console.log('🎯 DEBUGGING: Found', extractedTextMatches.length, 'matches in database extracted_text');
 
-      console.log('✅ Converted', tempAsMessages.length, 'temp items to message format');
-      tempAsMessages.forEach((msg, index) => {
-        console.log(`📄 Message ${index + 1}: extracted_text length = ${msg.extracted_text?.length}, title = ${msg.extracted_title}`);
-      });
+      // If no matches found, let's try a broader search
+      if (extractedTextMatches.length === 0) {
+        console.log('⚠️ DEBUGGING: No keyword matches found, trying broader search...');
+        
+        // Try searching for any of the query words individually
+        const queryWords = query.toLowerCase().split(' ').filter(word => word.length > 3);
+        console.log('🔍 DEBUGGING: Query words:', queryWords);
+        
+        const broadMatches = messagesWithExtractedText.filter(msg => {
+          const searchText = (
+            (msg.extracted_text || '') + ' ' + 
+            (msg.extracted_title || '') + ' ' + 
+            (msg.content || '')
+          ).toLowerCase();
+          
+          const hasWordMatch = queryWords.some(word => searchText.includes(word));
+          if (hasWordMatch) {
+            console.log('🎯 DEBUGGING: Broad match found in message:', msg.id, 'for words:', queryWords.filter(w => searchText.includes(w)));
+          }
+          return hasWordMatch;
+        });
+        
+        console.log('🎯 DEBUGGING: Broad search found', broadMatches.length, 'matches');
+        
+        // Use broad matches if available
+        if (broadMatches.length > 0) {
+          return broadMatches.slice(0, 5);
+        }
+      }
 
       // Search by content keywords in regular messages (including image analysis)
       const contentMatches = allMessages.filter(msg => {
+        // Skip messages we already found in extracted text search
+        if (extractedTextMatches.some(match => match.id === msg.id)) {
+          return false;
+        }
+        
         const searchText = (
           msg.content + ' ' + 
           (msg.ai_analysis || '') + ' ' + 
-          (msg.extracted_text || '') + ' ' + 
-          (msg.extracted_title || '') + ' ' +
           (msg.tags?.join(' ') || '') + ' ' +
           // Include image analysis content if it's an image message
           (msg.type === 'image' && msg.content.includes('Image shared -') ? 
@@ -185,7 +223,7 @@ class OpenAIService {
       const tagMatches = await this.searchByTags(keywords);
       
       // Combine all results with priority to extracted content
-      const allMatches = [...tempAsMessages, ...contentMatches, ...tagMatches];
+      const allMatches = [...extractedTextMatches, ...contentMatches, ...tagMatches];
       const uniqueMatches = allMatches.filter((msg, index, self) => 
         index === self.findIndex(m => m.id === msg.id)
       );
@@ -201,7 +239,18 @@ class OpenAIService {
         })
         .slice(0, 10); // Limit to top 10 most relevant
       
-      console.log('✅ Found', sortedMatches.length, 'relevant content pieces');
+      console.log('✅ DEBUGGING: Final sorted matches:', sortedMatches.length);
+      sortedMatches.forEach((msg, index) => {
+        console.log(`📄 DEBUGGING: Result ${index + 1}:`, {
+          id: msg.id,
+          type: msg.type,
+          title: msg.extracted_title || 'No title',
+          hasExtractedText: !!msg.extracted_text,
+          extractedTextLength: msg.extracted_text?.length || 0,
+          wordCount: msg.word_count || 0
+        });
+      });
+      
       return sortedMatches;
     } catch (error) {
       console.error('❌ Error searching relevant content:', error);
@@ -343,11 +392,16 @@ class OpenAIService {
       // Create system prompt to define Bill's personality
       const systemMessage = {
         role: 'system',
-        content: `You're Bill, a friendly personal assistant who helps with organizing saved content.
+        content: `You're Bill, a chill personal assistant. Talk like a helpful friend, not a formal AI.
 
-Keep it natural and brief - like you're chatting with a friend who asked for help. Be warm but not overly formal. If you don't have much to work with from their saved content, just say so and offer to help differently.
+Keep it SHORT and natural:
+- 1-2 sentences max unless they ask for details
+- Use casual language like "I see you saved..." or "Looks like..."
+- No formal phrases or AI-speak
+- If you don't know something, just say "I don't have that info" 
+- Be helpful but relaxed
 
-Stay conversational and helpful!`
+Think: texting a friend who's good at organizing stuff.`
       };
 
       console.log('🚀 Making request to OpenRouter API...');
@@ -481,38 +535,60 @@ Stay conversational and helpful!`
     }
   }
 
-  // Analyze image content using OpenAI Vision
-  async analyzeImageContent(imageUrl: string): Promise<string> {
+  // Generate tag suggestions based on content analysis
+  async generateTagSuggestions(contentToAnalyze: string): Promise<string[]> {
     try {
-      console.log('🖼️ Analyzing image content:', imageUrl);
-      
       const completion = await this.openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
           {
+            role: 'system',
+            content: 'You are a smart tagging assistant. Analyze the content and suggest 4-6 relevant, specific tags that would help organize this content. Focus on topics, categories, and key themes. Return only the tags as a comma-separated list, no explanations.'
+          },
+          {
             role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: 'Analyze this image and provide a detailed description including: objects, people, settings, colors, mood, and any text visible. Be comprehensive but concise.'
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: imageUrl
-                }
-              }
-            ]
+            content: `Analyze this content and suggest relevant tags:\n\n${contentToAnalyze}`
           }
         ],
-        max_tokens: 300,
+        max_tokens: 60,
+        temperature: 0.3,
       });
 
-      const analysis = completion.choices[0]?.message?.content || 'Unable to analyze image';
-      console.log('✅ Image analysis completed:', analysis.substring(0, 100) + '...');
-      return analysis;
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        return [];
+      }
+
+      // Parse the response into individual tags
+      return response
+        .split(',')
+        .map(tag => tag.trim())
+        .filter(tag => tag.length > 0 && tag.length <= 25)
+        .slice(0, 6); // Limit to 6 tags
     } catch (error) {
-      console.error('❌ Error analyzing image:', error);
+      console.error('Error generating tag suggestions:', error);
+      return [];
+    }
+  }
+
+  // Analyze image content using superfast FastImageAnalyzer
+  async analyzeImageContent(imageUrl: string): Promise<string> {
+    try {
+      console.log('⚡ Using superfast image analyzer for:', imageUrl);
+      
+      // Use the new FastImageAnalyzer for lightning-fast results
+      const FastImageAnalyzer = await import('./fast-image-analyzer');
+      const fastAnalyzer = FastImageAnalyzer.default.getInstance();
+      
+      const analysis = await fastAnalyzer.analyzeImageFast(imageUrl);
+      const description = fastAnalyzer.generateDescription(analysis);
+      
+      console.log(`⚡ Superfast image analysis completed in ${analysis.processingTime}ms`);
+      console.log('✅ Generated description:', description.substring(0, 100) + '...');
+      
+      return description;
+    } catch (error) {
+      console.error('❌ Error in superfast image analysis:', error);
       return 'Image analysis unavailable';
     }
   }
@@ -640,28 +716,16 @@ Stay conversational and helpful!`
         messages: [
           {
             role: 'system',
-            content: `You're Bill, a friendly personal assistant who helps organize and understand saved content.
+            content: `You're Bill, a chill personal assistant. Talk like a helpful friend, not a formal AI.
 
-**Your personality:**
-- Conversational and warm, like talking to a helpful friend
-- Keep responses SHORT (2-3 sentences max unless asked for details)
-- Use natural language - no formal AI speak
-- Be enthusiastic about helping but not overly excited
+Keep it SHORT and natural:
+- 1-2 sentences max unless they ask for details
+- Use casual language like "I see you saved..." or "Looks like..."
+- No formal phrases or AI-speak
+- If you don't know something, just say "I don't have that info" 
+- Be helpful but relaxed
 
-**What you can see:**
-- Documents and articles (marked as "DOCUMENT CONTENT")
-- Photos and images (marked as "IMAGE CONTENT") 
-- Only reference what's actually provided - don't guess or assume
-
-**How to respond:**
-- Start with a natural acknowledgment like "I can see you saved..." or "Looking at your content..."
-- Be specific but brief - mention key details without overwhelming
-- For images: describe what you actually see
-- For documents: pull out the main points
-- If asked about connections, briefly note themes across different content types
-- End helpfully - suggest what else they might want to know
-
-Remember: You're a personal assistant, not a research tool. Be helpful, quick, and human.`
+Think: texting a friend who's good at organizing stuff.`
           },
           {
             role: 'user',
@@ -699,15 +763,16 @@ Remember: You're a personal assistant, not a research tool. Be helpful, quick, a
       
       context.relevantContent.forEach((msg) => {
         // Add document/link extracted text content
-        if (msg.extracted_text && msg.extracted_text.length > 100) {
+        if (msg.extracted_text && msg.extracted_text.length > 50) {
           hasContent = true;
           console.log(`🎯 Adding extracted text to prompt: ${msg.extracted_title}, length: ${msg.extracted_text.length}`);
           
           prompt += `DOCUMENT CONTENT (Saved Document ${contentIndex}):\n`;
           prompt += `Title: ${msg.extracted_title || 'Untitled'}\n`;
           prompt += `Word Count: ${msg.word_count || 'Unknown'}\n`;
-          prompt += `Content Type: ${msg.type.toUpperCase()}\n\n`;
-          prompt += `TEXT CONTENT:\n${msg.extracted_text}\n`;
+          prompt += `Content Type: ${msg.type.toUpperCase()}\n`;
+          prompt += `URL: ${msg.file_url || 'N/A'}\n\n`;
+          prompt += `FULL TEXT CONTENT:\n${msg.extracted_text}\n`;
           prompt += `---END OF DOCUMENT---\n\n`;
           contentIndex++;
         }
@@ -729,16 +794,43 @@ Remember: You're a personal assistant, not a research tool. Be helpful, quick, a
           prompt += `---END OF IMAGE ANALYSIS---\n\n`;
           contentIndex++;
         }
+        
+        // Also check for any other content that might have analysis
+        if (!msg.extracted_text && msg.type === 'link' && msg.content && msg.content.length > 100) {
+          console.log(`📄 Adding link content without extracted_text: ${msg.content.substring(0, 100)}`);
+          prompt += `LINK CONTENT (Saved Link ${contentIndex}):\n`;
+          prompt += `Content Type: LINK\n`;
+          prompt += `URL: ${msg.file_url || msg.content}\n`;
+          prompt += `Description: ${msg.content}\n`;
+          if (msg.tags && msg.tags.length > 0) {
+            prompt += `Tags: ${msg.tags.join(', ')}\n`;
+          }
+          prompt += `---END OF LINK---\n\n`;
+          contentIndex++;
+          hasContent = true;
+        }
       });
       
       if (!hasContent) {
-        prompt += `NO EXTRACTED CONTENT OR IMAGE ANALYSIS AVAILABLE\n\n`;
-        // Add basic message info as fallback
+        console.log('⚠️ No extracted content found, showing available messages:');
         context.relevantContent.forEach((msg, index) => {
-          console.log(`⚠️ No content analysis for message ${index + 1}, type: ${msg.type}, content length: ${msg.content?.length || 0}`);
-          prompt += `Saved Item ${index + 1}: ${msg.type.toUpperCase()} - ${msg.content.substring(0, 200)}...\n`;
+          console.log(`📋 Message ${index + 1}:`, {
+            id: msg.id,
+            type: msg.type,
+            hasExtractedText: !!msg.extracted_text,
+            extractedTextLength: msg.extracted_text?.length || 0,
+            contentLength: msg.content?.length || 0,
+            title: msg.extracted_title || 'No title'
+          });
         });
-        prompt += `\n`;
+        
+        prompt += `AVAILABLE SAVED CONTENT:\n`;
+        context.relevantContent.forEach((msg, index) => {
+          prompt += `Item ${index + 1}: ${msg.type.toUpperCase()}`;
+          if (msg.extracted_title) prompt += ` - ${msg.extracted_title}`;
+          if (msg.file_url) prompt += ` (${msg.file_url})`;
+          prompt += `\nContent: ${msg.content.substring(0, 300)}${msg.content.length > 300 ? '...' : ''}\n\n`;
+        });
       }
     } else {
       prompt += `NO RELEVANT SAVED CONTENT FOUND\n\n`;
@@ -753,7 +845,7 @@ Remember: You're a personal assistant, not a research tool. Be helpful, quick, a
       });
     }
     
-    prompt += `\nRespond naturally and briefly using the content above. Reference what you actually see in their images and documents, and keep it conversational!`;
+    prompt += `\nRespond naturally using the content above. If you have the full document text, answer specifically from that content. If you only have basic info, say so and offer to help differently.`;
     
     return prompt;
   }
@@ -923,40 +1015,91 @@ Rules:
     if (docCount > 0) summary.push(`${docCount} documents`);
     if (linkCount > 0) summary.push(`${linkCount} links`);
     
-    // Analyze extracted content themes
-    const themes = extractedContent
-      .map(item => item.title || item.type)
-      .slice(-5)
-      .join(', ');
+    // Get actual extracted content titles and themes from database
+    const extractedTitles = messages
+      .filter(m => m.extracted_title && m.extracted_title.length > 0)
+      .map(m => m.extracted_title)
+      .slice(-5);
     
-    // Analyze image content themes
-    const imageThemes = messages
+    // Get actual extracted text snippets for theme analysis
+    const extractedTextSnippets = messages
+      .filter(m => m.extracted_text && m.extracted_text.length > 100)
+      .map(m => {
+        // Get first 200 characters of extracted text to identify themes
+        const snippet = m.extracted_text!.substring(0, 200);
+        return snippet;
+      })
+      .slice(-3);
+    
+    // Analyze image content themes from actual AI analysis
+    const imageAnalysis = messages
       .filter(m => m.type === 'image' && m.content.includes('Image shared -'))
       .map(m => {
         const analysis = m.content.replace('Image shared - ', '').replace('...', '');
-        // Extract key visual elements (first few words of analysis)
-        return analysis.split(' ').slice(0, 8).join(' ');
+        // Extract key themes from the actual image analysis
+        return analysis.substring(0, 150);
       })
-      .slice(-3)
-      .join('; ');
+      .slice(-3);
     
-    // Get common tags
-    const allTags = messages
+    // Get actual user tags (not generic ones)
+    const userTags = messages
       .filter(m => m.tags && m.tags.length > 0)
       .flatMap(m => m.tags!)
-      .slice(-10);
+      .reduce((acc, tag) => {
+        acc[tag] = (acc[tag] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
     
-    const tagSummary = allTags.length > 0 ? `Common tags: ${allTags.join(', ')}` : '';
+    const topUserTags = Object.entries(userTags)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 5)
+      .map(([tag, count]) => `${tag} (${count})`);
     
+    // Build detailed content description using actual user data
     let contentDesc = `User has saved: ${summary.join(', ')}.`;
-    if (themes) contentDesc += ` Recent content: ${themes}.`;
-    if (imageThemes) contentDesc += ` Image content: ${imageThemes}.`;
-    if (tagSummary) contentDesc += ` ${tagSummary}.`;
-    if (extractedContent.length > 0) {
-      const totalWords = extractedContent.reduce((sum, item) => sum + (item.wordCount || 0), 0);
-      contentDesc += ` ${extractedContent.length} items with ${totalWords} words extracted.`;
+    
+    if (extractedTitles.length > 0) {
+      contentDesc += ` Document titles: ${extractedTitles.join(', ')}.`;
     }
     
+    if (extractedTextSnippets.length > 0) {
+      contentDesc += ` Content themes from extracted text: ${extractedTextSnippets.join(' | ')}.`;
+    }
+    
+    if (imageAnalysis.length > 0) {
+      contentDesc += ` Image analysis: ${imageAnalysis.join(' | ')}.`;
+    }
+    
+    if (topUserTags.length > 0) {
+      contentDesc += ` User's actual tags: ${topUserTags.join(', ')}.`;
+    }
+    
+    // Add URL domains for link analysis
+    const linkDomains = messages
+      .filter(m => m.type === 'link' && m.file_url)
+      .map(m => {
+        try {
+          return new URL(m.file_url!).hostname.replace('www.', '');
+        } catch {
+          return 'unknown';
+        }
+      })
+      .slice(-5);
+    
+    if (linkDomains.length > 0) {
+      contentDesc += ` Link sources: ${linkDomains.join(', ')}.`;
+    }
+    
+    // Add word count from actual extracted content
+    const totalExtractedWords = messages
+      .filter(m => m.word_count && m.word_count > 0)
+      .reduce((sum, m) => sum + (m.word_count || 0), 0);
+    
+    if (totalExtractedWords > 0) {
+      contentDesc += ` Total extracted words: ${totalExtractedWords}.`;
+    }
+    
+    console.log('📊 Content summary for questions:', contentDesc);
     return contentDesc;
   }
 
@@ -964,37 +1107,102 @@ Rules:
     const fallbacks = [];
     
     if (messages.length > 0) {
+      // Get most common tags for specific questions
+      const allTags = messages
+        .filter(m => m.tags && m.tags.length > 0)
+        .flatMap(m => m.tags!)
+        .reduce((acc, tag) => {
+          acc[tag] = (acc[tag] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+      
+      const topTags = Object.entries(allTags)
+        .sort(([,a], [,b]) => b - a)
+        .slice(0, 3)
+        .map(([tag]) => tag);
+      
+      // Content-specific questions based on what user actually has
       if (messages.some(m => m.type === 'image')) {
         fallbacks.push("What's in my recent photos?");
-        fallbacks.push("Describe the images I've uploaded?");
-      }
-      if (messages.some(m => m.type === 'file')) {
-        fallbacks.push("Summarize my uploaded documents?");
-      }
-      if (messages.some(m => m.type === 'link')) {
-        fallbacks.push("What articles did I save?");
-      }
-      if (messages.some(m => m.tags && m.tags.length > 0)) {
-        fallbacks.push("Show me content by topic?");
+        fallbacks.push("Analyze my uploaded images?");
       }
       
-      // If both images and documents exist, suggest connection questions
+      if (messages.some(m => m.type === 'file')) {
+        fallbacks.push("Summarize my documents?");
+        fallbacks.push("What PDFs have I saved?");
+      }
+      
+      if (messages.some(m => m.type === 'link')) {
+        fallbacks.push("What articles did I save?");
+        fallbacks.push("Show me my saved links?");
+      }
+      
+      // Tag-specific questions
+      if (topTags.length > 0) {
+        if (topTags.includes('work') || topTags.includes('Work')) {
+          fallbacks.push("Show me my work-related content?");
+        }
+        if (topTags.includes('health') || topTags.includes('Health')) {
+          fallbacks.push("What health content did I save?");
+        }
+        if (topTags.includes('travel') || topTags.includes('Travel')) {
+          fallbacks.push("Find my travel-related saves?");
+        }
+        
+        // Generic tag question with actual tag
+        if (topTags[0]) {
+          fallbacks.push(`Show me my ${topTags[0]} content?`);
+        }
+      }
+      
+      // Relationship questions based on content mix
       const hasImages = messages.some(m => m.type === 'image');
-      const hasDocuments = messages.some(m => m.type === 'file' || m.type === 'link');
+      const hasDocuments = messages.some(m => m.type === 'file');
+      const hasLinks = messages.some(m => m.type === 'link');
+      
       if (hasImages && hasDocuments) {
-        fallbacks.push("How do my images relate to my documents?");
+        fallbacks.push("Connect my photos to my documents?");
+      }
+      if (hasLinks && hasDocuments) {
+        fallbacks.push("How do my articles relate to my files?");
+      }
+      
+      // Time-based questions
+      const recentCount = messages.filter(m => {
+        const messageDate = new Date(m.created_at);
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        return messageDate > weekAgo;
+      }).length;
+      
+      if (recentCount > 5) {
+        fallbacks.push("What did I save this week?");
+      }
+      
+      // Content volume questions
+      if (extractedContent.length > 3) {
+        fallbacks.push("Find key insights from my content?");
+        fallbacks.push("What are the main themes I save?");
       }
     }
     
-    // Add general fallbacks
-    fallbacks.push(
-      "What have I saved recently?",
-      "Help me organize my content?",
-      "Find connections in my uploads?"
-    );
+    // Smart general fallbacks only if no content-specific ones
+    if (fallbacks.length === 0) {
+      fallbacks.push(
+        "What should I save first?",
+        "How can you help me organize?",
+        "What types of content can I upload?"
+      );
+    } else {
+      // Add a few general ones to mix
+      fallbacks.push(
+        "What have I saved recently?",
+        "Help me find something specific?",
+        "Organize my content by topic?"
+      );
+    }
     
     return fallbacks.slice(0, limit);
   }
 }
 
-export default OpenAIService; 
+export default OpenAIService;

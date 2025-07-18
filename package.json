@@ -14,6 +14,7 @@
     "@expo/vector-icons": "^14.1.0",
     "@react-native-async-storage/async-storage": "2.1.2",
     "@react-native-google-signin/google-signin": "^14.0.2",
+    "@react-native-masked-view/masked-view": "0.3.2",
     "@react-navigation/bottom-tabs": "^7.4.2",
     "@react-navigation/drawer": "^7.5.3",
     "@react-navigation/elements": "^2.3.8",
@@ -26,6 +27,7 @@
     "expo-auth-session": "~6.2.0",
     "expo-av": "^15.1.7",
     "expo-blur": "~14.1.5",
+    "expo-clipboard": "^7.1.5",
     "expo-constants": "~17.1.6",
     "expo-crypto": "~14.1.5",
     "expo-document-picker": "~13.1.6",
@@ -34,8 +36,10 @@
     "expo-haptics": "~14.1.4",
     "expo-image": "~2.3.0",
     "expo-image-picker": "~16.1.4",
+    "expo-linear-gradient": "~14.1.5",
     "expo-linking": "~7.1.5",
     "expo-router": "~5.1.0",
+    "expo-sharing": "^13.1.5",
     "expo-splash-screen": "~0.30.9",
     "expo-status-bar": "~2.2.3",
     "expo-symbols": "~0.4.5",
@@ -55,9 +59,7 @@
     "react-native-screens": "~4.11.1",
     "react-native-web": "~0.20.0",
     "react-native-webview": "13.13.5",
-    "readability-js": "^1.0.7",
-    "expo-linear-gradient": "~14.1.5",
-    "@react-native-masked-view/masked-view": "0.3.2"
+    "readability-js": "^1.0.7"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

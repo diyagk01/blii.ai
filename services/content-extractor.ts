@@ -1,6 +1,5 @@
-// Note: In React Native, we'll need alternative approaches for PDF parsing and web scraping
-// since Node.js libraries don't work directly. This service provides the interface and
-// will use cloud services or alternative methods.
+// Direct web scraping service for extracting content from any web URL
+// This replaces the Perplexity-based approach with a more reliable direct scraper
 
 export interface ExtractedContent {
   title: string;
@@ -14,34 +13,45 @@ export interface ExtractedContent {
 
 export class ContentExtractor {
   /**
-   * Extract content from a web article using Perplexity
+   * Extract content from a web article using direct web scraping
    */
   async extractWebArticle(url: string): Promise<ExtractedContent> {
     try {
       console.log('🔗 Extracting web article content from:', url);
       
-      // Import Perplexity service
-      const PerplexityService = await import('./perplexity');
-      const perplexityService = PerplexityService.default.getInstance();
+      // Import Web Scraper service
+      const WebScraperService = await import('./web-scraper');
+      const webScraperService = WebScraperService.default.getInstance();
       
-      // Use Perplexity for content extraction
-      const analysis = await perplexityService.extractLinkContent(url);
+      // Use direct web scraping for content extraction
+      const scrapedContent = await webScraperService.scrapeUrl(url);
       
       console.log('✅ Content extraction completed:', {
-        title: analysis.title,
-        contentLength: analysis.content.length,
-        author: analysis.metadata?.author,
-        publishDate: analysis.metadata?.publishDate
+        title: scrapedContent.title,
+        contentLength: scrapedContent.content.length,
+        wordCount: scrapedContent.wordCount,
+        author: scrapedContent.author,
+        publishDate: scrapedContent.publishDate,
+        domain: scrapedContent.domain
       });
       
       return {
-        title: analysis.title,
-        content: analysis.content,
-        author: analysis.metadata?.author,
-        publish_date: analysis.metadata?.publishDate,
-        summary: analysis.summary,
-        full_text: analysis.content,
-        metadata: analysis.metadata
+        title: scrapedContent.title,
+        content: scrapedContent.content,
+        author: scrapedContent.author,
+        publish_date: scrapedContent.publishDate,
+        summary: scrapedContent.summary,
+        full_text: scrapedContent.content,
+        metadata: {
+          domain: scrapedContent.domain,
+          siteName: scrapedContent.metadata.siteName,
+          type: scrapedContent.metadata.type,
+          language: scrapedContent.metadata.language,
+          keywords: scrapedContent.metadata.keywords,
+          image: scrapedContent.image,
+          description: scrapedContent.description,
+          wordCount: scrapedContent.wordCount
+        }
       };
     } catch (error) {
       console.error('❌ Content extraction failed:', error);
@@ -73,7 +83,7 @@ export class ContentExtractor {
    */
   async testExtraction(url: string): Promise<ExtractedContent> {
     try {
-      console.log('🧪 Testing content extraction with Perplexity for:', url);
+      console.log('🧪 Testing content extraction with web scraper for:', url);
       
       const result = await this.extractWebArticle(url);
       

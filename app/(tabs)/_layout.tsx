@@ -1,7 +1,6 @@
-import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
-import { Text, View } from 'react-native';
+import { Image, Text } from 'react-native';
 
 export default function TabLayout() {
   return (
@@ -20,8 +19,6 @@ export default function TabLayout() {
           paddingTop: 0,
           paddingBottom: 18,
           height: 80,
-          borderTopLeftRadius: 24,
-          borderTopRightRadius: 24,
           position: 'absolute',
           left: 0,
           right: 0,
@@ -43,15 +40,12 @@ export default function TabLayout() {
         options={{
           title: 'Home',
           tabBarIcon: ({ focused, color, size }) => (
-            <View style={{
-              backgroundColor: focused ? '#007AFF' : 'transparent',
-              borderRadius: 16,
-              padding: focused ? 8 : 0,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <Ionicons name={focused ? 'home' : 'home-outline'} size={24} color={focused ? '#fff' : '#8E8E93'} />
-            </View>
+            <Image
+              source={focused
+                ? require('../../assets/images/home-3.png')
+                : require('../../assets/images/home-2.png')}
+              style={{ width: 22, height: 28, resizeMode: 'contain' }}
+            />
           ),
           tabBarLabel: ({ focused, color }) => (
             <Text style={{ color: focused ? '#007AFF' : '#8E8E93', fontWeight: '500', fontSize: 12, marginTop: 2 }}>Home</Text>
@@ -62,36 +56,29 @@ export default function TabLayout() {
         name="chat"
         options={{
           title: 'Chat',
-          tabBarIcon: ({ focused, color, size }) => (
-            <View style={{
-              backgroundColor: focused ? '#007AFF' : 'transparent',
-              borderRadius: 16,
-              padding: focused ? 8 : 0,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <Ionicons name={focused ? 'chatbubbles' : 'chatbubbles-outline'} size={24} color={focused ? '#fff' : '#8E8E93'} />
-            </View>
+          tabBarIcon: () => (
+            <Image
+              source={require('../../assets/images/message-text-2.png')}
+              style={{ width: 22, height: 28, resizeMode: 'contain' }}
+            />
           ),
           tabBarLabel: ({ focused, color }) => (
             <Text style={{ color: focused ? '#007AFF' : '#8E8E93', fontWeight: '500', fontSize: 12, marginTop: 2 }}>Chat</Text>
           ),
+          tabBarStyle: { display: 'none' }, // Hide tab bar on chat screen
         }}
       />
       <Tabs.Screen 
         name="all-saves"
         options={{
           title: 'All Saves',
-          tabBarIcon: ({ focused, color, size }) => (
-            <View style={{
-              backgroundColor: focused ? '#007AFF' : 'transparent',
-              borderRadius: 16,
-              padding: focused ? 8 : 0,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}>
-              <Ionicons name={focused ? 'folder' : 'folder-outline'} size={24} color={focused ? '#fff' : '#8E8E93'} />
-            </View>
+          tabBarIcon: ({ focused }) => (
+            <Image
+              source={focused
+                ? require('../../assets/images/frame.png')
+                : require('../../assets/images/frame-2.png')}
+              style={{ width: 22, height: 28, resizeMode: 'contain' }}
+            />
           ),
           tabBarLabel: ({ focused, color }) => (
             <Text style={{ color: focused ? '#007AFF' : '#8E8E93', fontWeight: '500', fontSize: 12, marginTop: 2 }}>All Saves</Text>

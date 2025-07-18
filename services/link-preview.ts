@@ -76,12 +76,12 @@ class LinkPreviewService {
         console.log('⚠️ HTML parsing failed, trying fallback methods:', error);
       }
 
-      // Method 2: Use Perplexity as fallback for content extraction
+      // Method 2: Use Web Scraper as fallback for content extraction
       if (!previewData || this.isPreviewIncomplete(previewData)) {
         try {
-          previewData = await this.generatePreviewWithPerplexity(normalizedUrl);
+          previewData = await this.generatePreviewWithWebScraper(normalizedUrl);
         } catch (error) {
-          console.log('⚠️ Perplexity fallback failed:', error);
+          console.log('⚠️ Web Scraper fallback failed:', error);
         }
       }
 
@@ -224,7 +224,100 @@ class LinkPreviewService {
       }
     });
 
+    // If no og:image or twitter:image found, try to extract from img tags
+    if (!metadata['og:image'] && !metadata['twitter:image']) {
+      const imageUrl = this.extractImageFromHtml(html);
+      if (imageUrl) {
+        metadata['og:image'] = imageUrl;
+      }
+    }
+
     return metadata;
+  }
+
+  /**
+   * Extract the best image from HTML content when meta tags are not available
+   */
+  private extractImageFromHtml(html: string): string | null {
+    try {
+      // Look for img tags with src attributes
+      const imgMatches = html.match(/<img[^>]+src=["']([^"']+)["'][^>]*>/gi);
+      
+      if (!imgMatches || imgMatches.length === 0) {
+        return null;
+      }
+
+      const imageUrls: Array<{ url: string; priority: number }> = [];
+      
+      // Extract all image URLs
+      imgMatches.forEach(match => {
+        const srcMatch = match.match(/src=["']([^"']+)["']/i);
+        if (srcMatch && srcMatch[1]) {
+          let imageUrl = srcMatch[1];
+          
+          // Decode HTML entities
+          imageUrl = this.decodeHtmlEntities(imageUrl);
+          
+          // Skip common non-content images
+          const skipPatterns = [
+            /logo/i,
+            /icon/i,
+            /avatar/i,
+            /profile/i,
+            /button/i,
+            /arrow/i,
+            /social/i,
+            /share/i,
+            /advertisement/i,
+            /ad[_-]/i,
+            /tracking/i,
+            /pixel/i,
+            /1x1/i,
+            /spacer/i,
+            /blank/i,
+            /transparent/i,
+            /\.svg$/i
+          ];
+          
+          const shouldSkip = skipPatterns.some(pattern => pattern.test(imageUrl));
+          
+          if (!shouldSkip) {
+            // Prefer larger images (look for dimensions in URL or attributes)
+            const hasLargeDimensions = /\d{3,4}[x\/]\d{3,4}/.test(imageUrl) || 
+                                     /width.*[3-9]\d{2,}|height.*[3-9]\d{2,}/i.test(match);
+            
+            imageUrls.push({
+              url: imageUrl,
+              priority: hasLargeDimensions ? 2 : 1
+            });
+          }
+        }
+      });
+
+      if (imageUrls.length === 0) {
+        return null;
+      }
+
+      // Sort by priority (higher first) and return the best image
+      imageUrls.sort((a, b) => b.priority - a.priority);
+      
+      let bestImage = imageUrls[0].url;
+      
+      // Make sure it's an absolute URL
+      if (bestImage.startsWith('//')) {
+        bestImage = 'https:' + bestImage;
+      } else if (bestImage.startsWith('/')) {
+        // This would need the base URL, but we'll skip relative URLs for now
+        return null;
+      }
+      
+      console.log('🖼️ Extracted image from HTML:', bestImage);
+      return bestImage;
+      
+    } catch (error) {
+      console.error('❌ Error extracting image from HTML:', error);
+      return null;
+    }
   }
 
   /**
@@ -278,30 +371,31 @@ class LinkPreviewService {
   }
 
   /**
-   * Use Perplexity to generate preview when HTML parsing fails
+   * Use Web Scraper to generate preview when HTML parsing fails
    */
-  private async generatePreviewWithPerplexity(url: string): Promise<LinkPreviewData | null> {
+  private async generatePreviewWithWebScraper(url: string): Promise<LinkPreviewData | null> {
     try {
-      console.log('🤖 Generating preview with Perplexity for:', url);
+      console.log('🕷️ Generating preview with Web Scraper for:', url);
       
-      const PerplexityService = await import('./perplexity');
-      const perplexityService = PerplexityService.default.getInstance();
+      const WebScraperService = await import('./web-scraper');
+      const webScraperService = WebScraperService.default.getInstance();
       
-      const analysis = await perplexityService.extractLinkContent(url);
+      const scrapedContent = await webScraperService.scrapeUrl(url);
       
       const domain = this.extractDomain(url);
       return {
-        title: analysis.title || `Content from ${domain}`,
-        description: analysis.summary || 'No description available',
-        image: this.generateContentTypeImage(analysis.metadata.type, domain),
+        title: scrapedContent.title || `Content from ${domain}`,
+        description: scrapedContent.summary || scrapedContent.description || 'No description available',
+        image: scrapedContent.image || this.generateContentTypeImage(scrapedContent.metadata.type || 'other', domain),
         domain: domain,
         url: url,
-        type: analysis.metadata.type,
-        author: analysis.metadata.author,
-        publishedTime: analysis.metadata.publishDate
+        type: this.mapContentType(scrapedContent.metadata.type),
+        author: scrapedContent.author,
+        publishedTime: scrapedContent.publishDate,
+        siteName: scrapedContent.metadata.siteName
       };
     } catch (error) {
-      console.error('❌ Perplexity preview generation failed:', error);
+      console.error('❌ Web Scraper preview generation failed:', error);
       return null;
     }
   }
@@ -344,27 +438,39 @@ class LinkPreviewService {
       preview.description = preview.description.substring(0, 77) + '...';
     }
 
-    // Validate and fix image
-    if (!preview.image || !this.isValidImageUrl(preview.image)) {
-      preview.image = this.generateFallbackImage(domain);
-    }
-
-    // Ensure absolute URL for image
-    if (preview.image && !preview.image.startsWith('http')) {
-      preview.image = new URL(preview.image, url).href;
-    }
-
-    // Validate image size and dimensions (simulate WhatsApp's validation)
-    try {
-      const isValidImage = await this.validateImage(preview.image);
-      if (!isValidImage) {
-        preview.image = this.generateFallbackImage(domain);
+    // Handle image validation more carefully
+    let finalImage = preview.image;
+    
+    // Only generate fallback if no image exists at all
+    if (!finalImage) {
+      finalImage = this.generateFallbackImage(domain);
+    } else {
+      // Ensure absolute URL for image
+      if (!finalImage.startsWith('http')) {
+        try {
+          finalImage = new URL(finalImage, url).href;
+        } catch (error) {
+          console.log('⚠️ Failed to make image URL absolute, using fallback');
+          finalImage = this.generateFallbackImage(domain);
+        }
       }
-    } catch (error) {
-      console.log('⚠️ Image validation failed, using fallback');
-      preview.image = this.generateFallbackImage(domain);
+
+      // Only validate if it's not already a placeholder
+      if (!finalImage.includes('placeholder') && !finalImage.includes('via.placeholder')) {
+        try {
+          const isValidImage = await this.validateImage(finalImage);
+          if (!isValidImage) {
+            console.log('⚠️ Image validation failed, keeping original image anyway:', finalImage);
+            // Keep the original image even if validation fails - let React Native handle it
+          }
+        } catch (error) {
+          console.log('⚠️ Image validation error, keeping original image:', finalImage);
+          // Keep the original image even if validation throws an error
+        }
+      }
     }
 
+    preview.image = finalImage;
     return preview;
   }
 
@@ -373,20 +479,46 @@ class LinkPreviewService {
    */
   private async validateImage(imageUrl: string): Promise<boolean> {
     try {
-      // For now, we'll do basic URL validation
-      // In a real implementation, you'd want to check:
-      // - Image size < 600KB
-      // - Width >= 300px
-      // - Aspect ratio <= 4:1
+      // Always allow placeholder images
+      if (imageUrl.includes('placeholder') || imageUrl.includes('via.placeholder')) {
+        return true;
+      }
       
+      // For real images, do a more thorough validation
       const url = new URL(imageUrl);
+      
+      // Check for valid image extensions or common image hosting patterns
       const validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
       const hasValidExtension = validExtensions.some(ext => 
         url.pathname.toLowerCase().includes(ext)
       );
       
-      return hasValidExtension || imageUrl.includes('placeholder') || imageUrl.includes('via.placeholder');
+      // Check for common image hosting patterns (like the KTVU image)
+      const imageHostingPatterns = [
+        /images\./i,
+        /static\./i,
+        /cdn\./i,
+        /media\./i,
+        /uploads/i,
+        /content/i,
+        /wp-content/i,
+        /assets/i
+      ];
+      
+      const hasImageHostingPattern = imageHostingPatterns.some(pattern => 
+        pattern.test(imageUrl)
+      );
+      
+      // Accept if it has valid extension OR looks like an image hosting URL
+      if (hasValidExtension || hasImageHostingPattern) {
+        console.log('✅ Image validation passed for:', imageUrl);
+        return true;
+      }
+      
+      console.log('⚠️ Image validation failed for:', imageUrl);
+      return false;
     } catch (error) {
+      console.log('❌ Image validation error for:', imageUrl, error);
       return false;
     }
   }
