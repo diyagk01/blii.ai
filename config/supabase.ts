@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // Get these from your Supabase project settings
 // Go to: Settings > API in your Supabase dashboard
-const supabaseUrl = 'https://cckclzuomxsxyhmceqal.supabase.co'; // e.g., https://your-project.supabase.co
-const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNja2NsenVvbXhzeHlobWNlcWFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEwMTQwNzUsImV4cCI6MjA2NjU5MDA3NX0.p81d9dX8iiIwyIjyL2dABWdDGBE-HbsVchN957lfaAI'; // Public anon key
+const supabaseUrl = process.env.SUPABASE_URL || 'https://cckclzuomxsxyhmceqal.supabase.co'; // e.g., https://your-project.supabase.co
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNja2NsenVvbXhzeHlobWNlcWFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEwMTQwNzUsImV4cCI6MjA2NjU5MDA3NX0.p81d9dX8iiIwyIjyL2dABWdDGBE-HbsVchN957lfaAI'; // Public anon key
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {

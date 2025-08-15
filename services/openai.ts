@@ -35,7 +35,7 @@ class OpenAIService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: process.env.OPENROUTER_API_KEY || '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
