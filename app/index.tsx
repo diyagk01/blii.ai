@@ -1,13 +1,10 @@
-// app/index.tsx
 'use client';
 
-import { ResizeMode, Video } from 'expo-av';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
   Dimensions,
   Image,
-  ImageBackground,
   SafeAreaView,
   StatusBar,
   StyleSheet,
@@ -27,8 +24,8 @@ const OnboardingScreen: React.FC = () => {
   };
 
   const handleSkip = () => {
-    // Skip onboarding: navigate to sign up screen
-    router.replace('/signupscreen');
+    // Skip onboarding: navigate to new auth screen
+    router.replace('/auth');
   };
 
   const handleBack = () => {
@@ -39,11 +36,6 @@ const OnboardingScreen: React.FC = () => {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent />
-      <ImageBackground
-        source={require('../assets/images/Screenshot 2025-07-11 at 9.19.53 PM.png')}
-        style={StyleSheet.absoluteFill}
-        resizeMode="cover"
-      />
 
       {/* Top Row: Skip only (no back button on first page) */}
       <View style={{ position: 'absolute', top: 90, left: 0, right: 0, flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', zIndex: 2, paddingHorizontal: 20 }}>
@@ -56,15 +48,10 @@ const OnboardingScreen: React.FC = () => {
       <View style={styles.content}>
         {/* Image Area */}
         <View style={styles.imageContainer}>
-          <Video
-            source={require('../assets/animations/Onboarding 1.mov')}
-            rate={1.0}
-            volume={1.0}
-            isMuted={false}
-            resizeMode={ResizeMode.COVER}
-            shouldPlay
-            isLooping
+          <Image
+            source={require('../assets/animations/Onboarding-1-unscreen.gif')}
             style={styles.placeholderImage}
+            resizeMode="cover"
           />
         </View>
 
@@ -103,12 +90,11 @@ const OnboardingScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    // backgroundColor: '#ffffff',
+    backgroundColor: '#f8f9fa',
   },
   content: {
     flex: 1,
     paddingHorizontal: 20,
-    // Remove justifyContent override
   },
   imageContainer: {
     flex: 1,
@@ -171,7 +157,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: 24,
-    backgroundColor: '#0066FF', // changed to blue
+    backgroundColor: '#0066FF',
     justifyContent: 'center',
     alignItems: 'center',
   },

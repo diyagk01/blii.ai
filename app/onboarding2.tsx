@@ -5,15 +5,15 @@ import { ResizeMode, Video } from 'expo-av';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-  Dimensions,
-  Image,
-  ImageBackground,
-  SafeAreaView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    Dimensions,
+    Image,
+    ImageBackground,
+    SafeAreaView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 
 const { width, height } = Dimensions.get('window');
@@ -28,8 +28,8 @@ const Onboarding2: React.FC = () => {
   };
 
   const handleSkip = () => {
-    // Skip onboarding: navigate to sign up screen
-    router.replace('/signupscreen');
+    // Skip onboarding: navigate to new auth screen
+    router.replace('/auth');
   };
 
   const handleBack = () => {

@@ -294,7 +294,10 @@ const SignUpScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Image source={require('../assets/images/Frame 36695.png')} style={styles.socialButtonImage} />
+                <View style={styles.googleButtonContent}>
+                  <Image source={require('../assets/images/Google.png')} style={styles.googleLogo} />
+                  <Text style={styles.googleButtonText}>Google</Text>
+                </View>
               )}
             </TouchableOpacity>
             <TouchableOpacity 
@@ -305,7 +308,10 @@ const SignUpScreen = () => {
               {loading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Image source={require('../assets/images/Frame 36695 (1).png')} style={styles.socialButtonImage} />
+                <View style={styles.appleButtonContent}>
+                  <Image source={require('../assets/images/Apple Logo.png')} style={styles.appleLogo} />
+                  <Text style={styles.appleButtonText}>Apple</Text>
+                </View>
               )}
             </TouchableOpacity>
           </View>
@@ -492,6 +498,42 @@ const styles = StyleSheet.create({
   },
   loginLink: {
     color: '#007AFF',
+    fontWeight: '500',
+  },
+  loadingContainer: {
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  googleButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googleLogo: {
+    width: 20,
+    height: 20,
+    marginRight: 8,
+  },
+  googleButtonText: {
+    fontSize: 16,
+    color: '#000',
+    fontWeight: '500',
+  },
+  appleButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appleLogo: {
+    width: 20,
+    height: 20,
+    marginRight: 8,
+  },
+  appleButtonText: {
+    fontSize: 16,
+    color: '#000',
     fontWeight: '500',
   },
 });

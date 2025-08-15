@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
     Alert,
@@ -9,20 +10,26 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import SupabaseAuthService from '../services/supabase-auth';
 
 interface ForgotPasswordConfirmationScreenProps {
   email?: string;
 }
 
 const ForgotPasswordConfirmationScreen = ({ 
-  email = "your email" 
+  email: propEmail = "your email" 
 }: ForgotPasswordConfirmationScreenProps) => {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ email?: string }>();
+  const effectiveEmail = params.email || propEmail;
   const [canResend, setCanResend] = useState(false);
   const [countdown, setCountdown] = useState(60);
   const [isResending, setIsResending] = useState(false);
 
-  useEffect(() => {
-    // Start countdown timer
+  const startCountdown = () => {
+    setCanResend(false);
+    setCountdown(60);
+    
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
@@ -33,7 +40,12 @@ const ForgotPasswordConfirmationScreen = ({
         return prev - 1;
       });
     }, 1000);
+    
+    return timer;
+  };
 
+  useEffect(() => {
+    const timer = startCountdown();
     return () => clearInterval(timer);
   }, []);
 
@@ -43,40 +55,23 @@ const ForgotPasswordConfirmationScreen = ({
     setIsResending(true);
     
     try {
-      // Simulate API call to resend email
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
+      await SupabaseAuthService.getInstance().requestPasswordReset(effectiveEmail);
       Alert.alert(
         'Email Resent',
         'Password recovery instructions have been sent again to your email address.',
         [{ text: 'OK' }]
       );
-      
-      // Reset countdown
-      setCanResend(false);
-      setCountdown(60);
-      
-      // Restart timer
-      const timer = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            setCanResend(true);
-            clearInterval(timer);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      
-    } catch (error) {
-      Alert.alert('Error', 'Failed to resend email. Please try again.');
+      // Restart the countdown timer
+      startCountdown();
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to resend email. Please try again.');
     } finally {
       setIsResending(false);
     }
   };
 
   const handleBackPress = () => {
-    console.log('Navigate back to login or previous screen');
+    router.back();
   };
 
   const formatTime = (seconds: number) => {
@@ -115,6 +110,7 @@ const ForgotPasswordConfirmationScreen = ({
           <Text style={styles.successMessage}>
             We have sent password recovery instructions to your email
           </Text>
+          <Text style={[styles.infoText, { marginTop: 8 }]}>({effectiveEmail})</Text>
         </View>
 
         {/* Additional Info */}

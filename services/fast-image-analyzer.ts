@@ -11,6 +11,7 @@ interface FastImageAnalysis {
   category: string;
   confidence: number;
   processingTime: number;
+  content_tags?: string[]; // New field for content-relevant tags
 }
 
 class FastImageAnalyzer {
@@ -19,7 +20,7 @@ class FastImageAnalyzer {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -40,36 +41,42 @@ class FastImageAnalyzer {
     const startTime = Date.now();
     
     try {
-      console.log('⚡ Starting superfast image analysis:', imageUrl);
+      console.log('⚡ Starting Claude 3.5 Sonnet image analysis:', imageUrl);
       
-      // Use optimized prompt for faster processing
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini', // Fastest vision model
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Analysis timeout - taking too long')), 20000); // 20 second timeout
+      });
+      
+      // Use Claude 3.5 Sonnet with speed optimizations
+      const analysisPromise = this.openai.chat.completions.create({
+        model: 'anthropic/claude-3.5-sonnet', // Claude 3.5 Sonnet for better image analysis
         messages: [
           {
             role: 'user',
             content: [
               {
                 type: 'text',
-                text: `Analyze this image in detail and provide:
-1. Detailed description (2-3 sentences with specific details)
-2. Main objects/subjects (4-6 items with descriptive details)
-3. Dominant colors (3-4 specific colors)
-4. Setting/environment details
-5. Any visible text or writing
-6. Plant/flower identification if applicable (species, characteristics)
-7. Category (photo, document, screenshot, art, etc.)
+                text: `Analyze this image quickly and provide:
+1. Brief description (1-2 sentences)
+2. Main objects (3-4 items with descriptive details)
+3. Dominant colors (2-3 colors)
+4. Setting/environment
+5. Any visible text
+6. Category (photo, document, screenshot, art)
+7. Content-relevant tags (3-5 tags that describe the main content/subject)
 
 Format as JSON:
 {
-  "description": "detailed description with specific visual elements",
+  "description": "brief description",
   "objects": ["detailed object1", "detailed object2", "detailed object3"],
-  "colors": ["specific color1", "specific color2", "specific color3"],
-  "setting": "environment or setting description",
-  "mood": "mood or atmosphere",
-  "text": "any visible text or null",
-  "plant_info": "plant identification and characteristics if applicable, or null",
-  "category": "category"
+  "colors": ["color1", "color2"],
+  "setting": "environment",
+  "mood": "mood",
+  "text": "visible text or null",
+  "plant_info": "plant info or null",
+  "category": "category",
+  "content_tags": ["relevant tag1", "relevant tag2", "relevant tag3"]
 }`
               },
               {
@@ -82,44 +89,116 @@ Format as JSON:
             ]
           }
         ],
-        max_tokens: 400, // Increased for detailed analysis
-        temperature: 0.3, // Lower temperature for consistency
+        max_tokens: 300, // Reduced for faster response
+        temperature: 0.1, // Lower temperature for consistency and speed
       });
+
+      // Race between analysis and timeout
+      const completion = await Promise.race([analysisPromise, timeoutPromise]) as any;
 
       const response = completion.choices[0]?.message?.content;
       if (!response) {
-        throw new Error('No response from vision API');
+        throw new Error('No response from Claude 3.5 Sonnet API');
       }
 
       // Parse JSON response
-      let analysisData;
+      let analysisData = null;
       try {
         // Clean the response to extract JSON
         const jsonMatch = response.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           analysisData = JSON.parse(jsonMatch[0]);
         } else {
-          throw new Error('No JSON found in response');
+          // Try fallback parsing if no JSON structure found
+          analysisData = this.parseResponseFallback(response);
+          console.log('✅ Used fallback parsing for primary response');
         }
       } catch (parseError) {
-        console.log('⚠️ JSON parse failed, using fallback parsing');
-        // Fallback parsing if JSON is malformed
-        analysisData = this.parseResponseFallback(response);
+        console.warn('❌ Failed to parse Claude 3.5 Sonnet response, trying fallback...');
+        
+        // Fallback to GPT-4o-mini for speed
+        try {
+          console.log('🔄 Falling back to GPT-4o-mini for faster analysis...');
+          const fallbackCompletion = await this.openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: `Analyze this image quickly and provide:
+1. Brief description (1-2 sentences)
+2. Main objects (3-4 items with descriptive details)
+3. Dominant colors (2-3 colors)
+4. Setting/environment
+5. Any visible text
+6. Category (photo, document, screenshot, art)
+7. Content-relevant tags (3-5 tags that describe the main content/subject)
+
+Format as JSON:
+{
+  "description": "brief description",
+  "objects": ["detailed object1", "detailed object2", "detailed object3"],
+  "colors": ["color1", "color2"],
+  "setting": "environment",
+  "mood": "mood",
+  "text": "visible text or null",
+  "plant_info": "plant info or null",
+  "category": "category",
+  "content_tags": ["relevant tag1", "relevant tag2", "relevant tag3"]
+}`
+                  },
+                  {
+                    type: 'image_url',
+                    image_url: {
+                      url: imageUrl,
+                      detail: 'low'
+                    }
+                  }
+                ]
+              }
+            ],
+            max_tokens: 250,
+            temperature: 0.1,
+          });
+          
+          const fallbackResponse = fallbackCompletion.choices[0]?.message?.content;
+          if (fallbackResponse) {
+            const jsonMatch = fallbackResponse.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              analysisData = JSON.parse(jsonMatch[0]);
+              console.log('✅ Fallback to GPT-4o-mini successful');
+            } else {
+              analysisData = this.parseResponseFallback(fallbackResponse);
+              console.log('✅ Fallback to manual parsing successful');
+            }
+          } else {
+            throw new Error('No fallback response');
+          }
+        } catch (fallbackError) {
+          console.error('❌ Fallback also failed:', fallbackError);
+          throw new Error('Both Claude 3.5 Sonnet and fallback failed');
+        }
       }
 
       const processingTime = Date.now() - startTime;
       
+      // Ensure analysisData is an object
+      const safeAnalysisData = analysisData || {};
+      
       const result: FastImageAnalysis = {
-        description: analysisData.description || 'Image analysis completed',
-        objects: Array.isArray(analysisData.objects) ? analysisData.objects : [],
-        colors: Array.isArray(analysisData.colors) ? analysisData.colors : [],
-        setting: analysisData.setting || undefined,
-        mood: analysisData.mood || 'neutral',
-        text: analysisData.text || undefined,
-        plant_info: analysisData.plant_info || undefined,
-        category: analysisData.category || 'photo',
+        description: safeAnalysisData.description || 'Image analysis completed',
+        objects: Array.isArray(safeAnalysisData.objects) ? safeAnalysisData.objects : [],
+        colors: Array.isArray(safeAnalysisData.colors) ? safeAnalysisData.colors : [],
+        setting: safeAnalysisData.setting || undefined,
+        mood: safeAnalysisData.mood || 'neutral',
+        text: safeAnalysisData.text || undefined,
+        plant_info: safeAnalysisData.plant_info || undefined,
+        category: safeAnalysisData.category || 'photo',
         confidence: 0.85, // Default confidence
-        processingTime
+        processingTime,
+        content_tags: Array.isArray(safeAnalysisData.content_tags) ? safeAnalysisData.content_tags : undefined
       };
 
       console.log(`⚡ Fast image analysis completed in ${processingTime}ms:`, {
@@ -134,15 +213,16 @@ Format as JSON:
       
       const processingTime = Date.now() - startTime;
       
-      // Return basic fallback analysis
+      // Return enhanced fallback analysis with useful default tags
       return {
-        description: 'Image uploaded - analysis unavailable',
-        objects: [],
-        colors: [],
-        mood: 'unknown',
+        description: 'Image uploaded successfully',
+        objects: ['image'],
+        colors: ['unknown'],
+        mood: 'neutral',
         category: 'photo',
         confidence: 0.1,
-        processingTime
+        processingTime,
+        content_tags: ['📷 Photo', 'Uploaded']
       };
     }
   }
@@ -189,6 +269,17 @@ Format as JSON:
     const textMatch = response.match(/text['":\s]*["']([^"']+)["']/i);
     result.text = textMatch ? textMatch[1] : null;
     
+    // Extract content_tags
+    const contentTagsMatch = response.match(/content_tags['":\s]*\[([^\]]+)\]/i);
+    if (contentTagsMatch) {
+      result.content_tags = contentTagsMatch[1]
+        .split(',')
+        .map(tag => tag.trim().replace(/['"]/g, ''))
+        .filter(tag => tag.length > 0);
+    } else {
+      result.content_tags = [];
+    }
+    
     return result;
   }
 
@@ -225,56 +316,122 @@ Format as JSON:
     return description;
   }
 
-  // Generate smart tags from analysis
+  // Generate smart tags from analysis with enhanced content relevance - returns exactly 1 tag
   generateTags(analysis: FastImageAnalysis): string[] {
-    const tags: string[] = [];
+    // Priority order for selecting the single most relevant tag
+    const tagCandidates: string[] = [];
     
-    // Add category tag
-    tags.push(analysis.category);
+    // 1. Prioritize specific content-relevant tags from AI analysis
+    if (analysis.content_tags && analysis.content_tags.length > 0) {
+      tagCandidates.push(...analysis.content_tags);
+    }
     
-    // Add object tags (limit to 3 most relevant)
+    // 2. Smart category-based tagging with proper capitalization
+    const categoryTag = this.getCategorizedTag(analysis);
+    if (categoryTag) {
+      tagCandidates.push(categoryTag);
+    }
+    
+    // 3. Most prominent object if highly relevant
     if (analysis.objects.length > 0) {
-      tags.push(...analysis.objects.slice(0, 3));
+      const relevantObjects = analysis.objects.filter(obj => 
+        !['object', 'thing', 'item', 'background'].includes(obj.toLowerCase())
+      );
+      if (relevantObjects.length > 0) {
+        tagCandidates.push(relevantObjects[0]);
+      }
     }
     
-    // Add color tags if distinctive
-    if (analysis.colors.length > 0) {
-      const colorTags = analysis.colors
-        .filter(color => !['white', 'black', 'gray', 'grey'].includes(color.toLowerCase()))
-        .slice(0, 2);
-      tags.push(...colorTags);
+    // 4. Fallback to category
+    if (analysis.category && analysis.category !== 'unknown') {
+      tagCandidates.push(analysis.category);
     }
     
-    // Add mood tag if not neutral
-    if (analysis.mood && analysis.mood !== 'neutral' && analysis.mood !== 'unknown') {
-      tags.push(analysis.mood);
+    // Select the best tag and format it properly
+    let bestTag = tagCandidates.length > 0 ? tagCandidates[0] : 'Image';
+    
+    // Clean and format the tag with proper capitalization
+    bestTag = this.formatTagProperly(bestTag);
+    
+    // Ensure the tag meets quality criteria
+    if (!bestTag || bestTag.length === 0 || bestTag.length > 20) {
+      bestTag = 'Image';
     }
     
-    // Add special tags based on category
-    switch (analysis.category.toLowerCase()) {
+    return [bestTag]; // Always return exactly 1 tag
+  }
+
+  // Get a smart categorized tag with proper naming
+  private getCategorizedTag(analysis: FastImageAnalysis): string | null {
+    const category = analysis.category?.toLowerCase();
+    const objects = analysis.objects.map(obj => obj.toLowerCase());
+    const description = analysis.description?.toLowerCase() || '';
+    
+    // Smart category mapping with specific, useful tags
+    switch (category) {
       case 'document':
       case 'screenshot':
-        tags.push('text', 'document');
-        break;
+        if (description.includes('code') || description.includes('programming')) return 'Code Screenshot';
+        if (description.includes('text') || description.includes('document')) return 'Document';
+        return 'Screenshot';
+        
+      case 'food':
+        if (objects.some(obj => ['dessert', 'cake', 'sweet'].includes(obj))) return 'Dessert';
+        if (objects.some(obj => ['drink', 'beverage', 'coffee', 'tea'].includes(obj))) return 'Beverage';
+        return 'Food';
+        
+      case 'nature':
+        if (objects.some(obj => ['flower', 'plant', 'garden'].includes(obj))) return 'Plants';
+        if (objects.some(obj => ['mountain', 'landscape', 'scenery'].includes(obj))) return 'Landscape';
+        if (objects.some(obj => ['animal', 'bird', 'wildlife'].includes(obj))) return 'Wildlife';
+        return 'Nature';
+        
+      case 'people':
+      case 'person':
+        if (objects.some(obj => ['selfie', 'portrait'].includes(obj))) return 'Portrait';
+        if (objects.some(obj => ['group', 'family', 'friends'].includes(obj))) return 'People';
+        return 'Portrait';
+        
       case 'art':
       case 'artwork':
-        tags.push('creative', 'art');
-        break;
-      case 'photo':
-        if (analysis.objects.some(obj => ['person', 'people', 'face'].includes(obj.toLowerCase()))) {
-          tags.push('people');
-        }
-        if (analysis.objects.some(obj => ['food', 'meal', 'restaurant'].includes(obj.toLowerCase()))) {
-          tags.push('food');
-        }
-        break;
+        return 'Art';
+        
+      case 'technology':
+      case 'tech':
+        if (objects.some(obj => ['phone', 'mobile', 'smartphone'].includes(obj))) return 'Mobile Tech';
+        if (objects.some(obj => ['computer', 'laptop', 'screen'].includes(obj))) return 'Computing';
+        return 'Technology';
+        
+      case 'vehicle':
+      case 'transportation':
+        if (objects.some(obj => ['car', 'automobile'].includes(obj))) return 'Automotive';
+        if (objects.some(obj => ['plane', 'aircraft'].includes(obj))) return 'Aviation';
+        return 'Transportation';
+        
+      case 'indoor':
+        if (objects.some(obj => ['kitchen', 'cooking'].includes(obj))) return 'Kitchen';
+        if (objects.some(obj => ['bedroom', 'bed'].includes(obj))) return 'Bedroom';
+        if (objects.some(obj => ['office', 'desk', 'work'].includes(obj))) return 'Workspace';
+        return 'Interior';
+        
+      case 'outdoor':
+        if (objects.some(obj => ['building', 'architecture'].includes(obj))) return 'Architecture';
+        if (objects.some(obj => ['street', 'city', 'urban'].includes(obj))) return 'Urban';
+        return 'Outdoor';
+        
+      default:
+        return null;
     }
-    
-    // Clean and deduplicate tags
-    return [...new Set(tags)]
-      .map(tag => tag.toLowerCase().trim())
-      .filter(tag => tag.length > 0 && tag.length <= 15)
-      .slice(0, 5); // Limit to 5 tags
+  }
+
+  // Format tag with proper capitalization and cleanup
+  private formatTagProperly(tag: string): string {
+    return tag
+      .toLowerCase()
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+      .trim();
   }
 
   // Batch analyze multiple images (for future use)
@@ -305,30 +462,84 @@ Format as JSON:
 
   // Test the analyzer with a sample image
   async testAnalyzer(): Promise<void> {
+    console.log('🧪 Testing Claude 3.5 Sonnet image analyzer...');
+    
     try {
-      console.log('🧪 Testing fast image analyzer...');
+      // Test with a sample image
+      const testImageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg';
       
-      // Use a test image URL (placeholder)
-      const testUrl = 'https://via.placeholder.com/400x300/0066cc/ffffff?text=Test+Image';
+      const analysis = await this.analyzeImageFast(testImageUrl);
       
-      const analysis = await this.analyzeImageFast(testUrl);
+      console.log('✅ Claude 3.5 Sonnet Analysis Results:');
+      console.log('📝 Description:', analysis.description);
+      console.log('🏷️ Objects:', analysis.objects);
+      console.log('🎨 Colors:', analysis.colors);
+      console.log('📍 Setting:', analysis.setting);
+      console.log('😊 Mood:', analysis.mood);
+      console.log('📄 Text:', analysis.text);
+      console.log('🌱 Plant Info:', analysis.plant_info);
+      console.log('📂 Category:', analysis.category);
+      console.log('⚡ Processing Time:', analysis.processingTime + 'ms');
+      console.log('🎯 Confidence:', analysis.confidence);
       
-      console.log('✅ Test analysis completed:', {
-        processingTime: analysis.processingTime,
-        description: analysis.description,
-        objects: analysis.objects,
-        category: analysis.category,
-        confidence: analysis.confidence
-      });
+      // Test description and tag generation
+      const description = this.generateDescription(analysis);
+      const tags = this.generateTags(analysis);
       
-      const generatedDescription = this.generateDescription(analysis);
-      const generatedTags = this.generateTags(analysis);
-      
-      console.log('📝 Generated description:', generatedDescription);
-      console.log('🏷️ Generated tags:', generatedTags);
+      console.log('📝 Generated Description:', description);
+      console.log('🏷️ Generated Tags:', tags);
       
     } catch (error) {
       console.error('❌ Test failed:', error);
+    }
+  }
+
+  // Test database storage of image analysis
+  async testDatabaseStorage(): Promise<void> {
+    console.log('🗄️ Testing database storage of image analysis...');
+    
+    try {
+      const ChatService = await import('./chat');
+      const chatService = ChatService.default.getInstance();
+      
+      // Test with a sample image
+      const testImageUrl = 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Gfp-wisconsin-madison-the-nature-boardwalk.jpg/2560px-Gfp-wisconsin-madison-the-nature-boardwalk.jpg';
+      
+      // Analyze the image
+      const analysis = await this.analyzeImageFast(testImageUrl);
+      const description = this.generateDescription(analysis);
+      const tags = this.generateTags(analysis);
+      
+      console.log('📊 Analysis completed, testing database storage...');
+      
+      // Save to database with analysis
+      const savedMessage = await chatService.saveMessageWithContentExtraction(
+        description,
+        'image',
+        {
+          fileUrl: testImageUrl,
+          tags: tags,
+          fileType: 'image/jpeg',
+          fileSize: 1024 * 1024, // 1MB placeholder
+        }
+      );
+      
+      console.log('✅ Message saved to database with ID:', savedMessage.id);
+      console.log('📝 Stored description:', savedMessage.content);
+      console.log('🏷️ Stored tags:', savedMessage.tags);
+      
+      // Verify the message can be retrieved
+      const retrievedMessage = await chatService.getMessage(savedMessage.id);
+      if (retrievedMessage) {
+        console.log('✅ Message successfully retrieved from database');
+        console.log('📝 Retrieved description:', retrievedMessage.content);
+        console.log('🏷️ Retrieved tags:', retrievedMessage.tags);
+      } else {
+        console.error('❌ Failed to retrieve message from database');
+      }
+      
+    } catch (error) {
+      console.error('❌ Database storage test failed:', error);
     }
   }
 }

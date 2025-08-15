@@ -31,7 +31,7 @@ class PerplexityService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -70,14 +70,19 @@ class PerplexityService {
             messages: [
               {
                 role: 'user',
-                content: `Go to this URL and copy the ENTIRE article text word-for-word: ${url}
+                content: `Analyze and summarize the content from this URL: ${url}
                 
-                DO NOT summarize, analyze, or rewrite anything. Copy the full article text exactly as it appears on the webpage. Include every paragraph, quote, and detail. Return ONLY the raw article content with no additional commentary, analysis, or formatting.
+                Provide a comprehensive but concise summary that includes:
+                1. Main topic and key points (2-3 sentences)
+                2. Important details, findings, or arguments (3-4 bullet points)
+                3. Conclusion or takeaways (1-2 sentences)
                 
-                If you cannot access the full article, tell me exactly what you can see and why the content is limited.`
+                Keep the summary between 150-300 words. Focus on the most valuable information that would help someone understand the article's core message without reading the full text.
+                
+                If you cannot access the content, explain what information is available and any limitations.`
               }
             ],
-            max_tokens: 3000,
+            max_tokens: 500,
             temperature: 0.0
           });
           
@@ -97,14 +102,19 @@ class PerplexityService {
             messages: [
               {
                 role: 'user',
-                content: `Go to this URL and copy the ENTIRE article text word-for-word: ${url}
+                content: `Analyze and summarize the content from this URL: ${url}
                 
-                DO NOT summarize, analyze, or rewrite anything. Copy the full article text exactly as it appears on the webpage. Include every paragraph, quote, and detail. Return ONLY the raw article content with no additional commentary, analysis, or formatting.
+                Provide a comprehensive but concise summary that includes:
+                1. Main topic and key points (2-3 sentences)
+                2. Important details, findings, or arguments (3-4 bullet points)
+                3. Conclusion or takeaways (1-2 sentences)
                 
-                If you cannot access the full article, tell me exactly what you can see and why the content is limited.`
+                Keep the summary between 150-300 words. Focus on the most valuable information that would help someone understand the article's core message without reading the full text.
+                
+                If you cannot access the content, explain what information is available and any limitations.`
               }
             ],
-            max_tokens: 2000, // Reduced to avoid credit limit
+            max_tokens: 500, // Optimized for concise summaries
             temperature: 0.0
           });
           
@@ -123,14 +133,19 @@ class PerplexityService {
           messages: [
             {
               role: 'user',
-              content: `Go to this URL and copy the ENTIRE article text word-for-word: ${url}
+              content: `Analyze and summarize the content from this URL: ${url}
               
-              DO NOT summarize, analyze, or rewrite anything. Copy the full article text exactly as it appears on the webpage. Include every paragraph, quote, and detail. Return ONLY the raw article content with no additional commentary, analysis, or formatting.
+              Provide a comprehensive but concise summary that includes:
+              1. Main topic and key points (2-3 sentences)
+              2. Important details, findings, or arguments (3-4 bullet points)
+              3. Conclusion or takeaways (1-2 sentences)
               
-              If you cannot access the full article, tell me exactly what you can see and why the content is limited.`
+              Keep the summary between 150-300 words. Focus on the most valuable information that would help someone understand the article's core message without reading the full text.
+              
+              If you cannot access the content, explain what information is available and any limitations.`
             }
           ],
-          max_tokens: 2000, // Reduced to avoid credit limit
+          max_tokens: 500, // Optimized for concise summaries
           temperature: 0.0
         });
         

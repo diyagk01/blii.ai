@@ -172,6 +172,19 @@ class LinkPreviewService {
     }
   }
   /**
+   * Decode HTML entities
+   */
+  private decodeHtmlEntities(text: string): string {
+    return text
+      .replace(/&#039;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&nbsp;/g, ' ');
+  }
+
+  /**
    * Parse HTML meta tags from raw HTML content
    */
   private parseHtmlMetaTags(html: string): LinkMetadata {
@@ -537,41 +550,8 @@ class LinkPreviewService {
    * Generate fallback image for domains
    */
   private generateFallbackImage(domain: string): string {
-    // Create a more visually appealing fallback image
-    const domainColors: Record<string, string> = {
-      'youtube.com': 'FF0000',
-      'twitter.com': '1DA1F2',
-      'facebook.com': '1877F2',
-      'instagram.com': 'E4405F',
-      'linkedin.com': '0077B5',
-      'github.com': '333333',
-      'medium.com': '00AB6C',
-      'reddit.com': 'FF4500',
-      'news.ycombinator.com': 'FF6600',
-      'stackoverflow.com': 'F58025'
-    };
-
-    const domainIcons: Record<string, string> = {
-      'youtube.com': '▶️',
-      'twitter.com': '🐦',
-      'facebook.com': '📘',
-      'instagram.com': '📷',
-      'linkedin.com': '💼',
-      'github.com': '🐙',
-      'medium.com': '📝',
-      'reddit.com': '🤖',
-      'news.ycombinator.com': '🔶',
-      'stackoverflow.com': '❓'
-    };
-
-    // Get domain-specific color and icon, or use defaults
-    const color = domainColors[domain] || this.getColorFromDomain(domain);
-    const icon = domainIcons[domain] || '🔗';
-    
-    const encodedIcon = encodeURIComponent(icon);
-    const encodedDomain = encodeURIComponent(domain.substring(0, 15)); // Limit domain length
-    
-    return `https://via.placeholder.com/400x300/${color}/white?text=${encodedIcon}+${encodedDomain}`;
+    // Return a grey background for links with no image
+    return `https://via.placeholder.com/400x300/808080/white?text=🔗+${encodeURIComponent(domain.substring(0, 15))}`;
   }
 
   /**

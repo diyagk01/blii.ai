@@ -22,13 +22,13 @@ const Onboarding3: React.FC = () => {
   const router = useRouter();
 
   const handleNext = () => {
-    // Navigate to the signup screen
-    router.push('/signupscreen');
+    // Navigate to the new auth screen
+    router.push('/auth');
   };
 
   const handleSkip = () => {
-    // Skip onboarding: navigate to sign up screen
-    router.replace('/signupscreen');
+    // Skip onboarding: navigate to new auth screen
+    router.replace('/auth');
   };
 
   const handleBackToStep1 = () => {

@@ -10,7 +10,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // Enable automatic session refresh
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: false,
+    detectSessionInUrl: false, // Keep false for mobile, we'll handle manually
+    flowType: 'pkce', // Use PKCE flow for better security
   },
 });
 
@@ -38,11 +39,13 @@ export interface ChatMessage {
   file_type?: string;
   file_size?: number;
   tags?: string[];
+
   // AI Analysis fields
   ai_analysis?: string;        // Detailed AI analysis of content
   content_insights?: string;   // Key insights and summaries
   visual_description?: string; // For images: detailed visual description
   document_summary?: string;   // For documents: content summary
+  preview_image?: string;      // For PDFs: first page preview image URL
   // Content extraction fields
   extracted_text?: string;     // Full extracted text from PDFs/articles
   extracted_title?: string;    // Title extracted from content

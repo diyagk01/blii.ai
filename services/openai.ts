@@ -11,16 +11,31 @@ interface DatabaseContext {
   userPatterns: string;
 }
 
+interface ConversationState {
+  lastAIResponse: string;
+  lastUserQuery: string;
+  conversationContext: string;
+  followUpExpected: boolean;
+  lastActionOffered: string;
+}
+
 class OpenAIService {
   private static instance: OpenAIService;
   private openai: OpenAI;
   private chatService = ChatService.getInstance();
   private authService = SupabaseAuthService.getInstance();
   private contentExtractor = contentExtractor;
+  private conversationState: ConversationState = {
+    lastAIResponse: '',
+    lastUserQuery: '',
+    conversationContext: '',
+    followUpExpected: false,
+    lastActionOffered: ''
+  };
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: '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',
+      apiKey: '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -36,224 +51,289 @@ class OpenAIService {
     return OpenAIService.instance;
   }
 
-  // Comprehensive database search and context building with temporary storage
-  private async buildDatabaseContext(userMessage: string): Promise<DatabaseContext> {
+  // Enhanced method to build database context with better debugging
+  private async buildDatabaseContext(userQuery: string): Promise<DatabaseContext> {
     try {
-      console.log('🔍 Building comprehensive database context for:', userMessage);
+      console.log('🔍 Building database context for query:', userQuery);
       
-      // Get all user messages for analysis
+      // Get all messages with extracted content
       const allMessages = await this.chatService.getUserMessages(100);
-      const recentMessages = allMessages.slice(-15);
+      console.log(`📊 Retrieved ${allMessages.length} total messages from database`);
       
-      // Get extracted content from temporary storage
-      const allExtractedContent = await this.chatService.getAllExtractedContent();
+      // Debug: Log messages with extracted content
+      const messagesWithExtractedText = allMessages.filter(msg => msg.extracted_text && msg.extracted_text.length > 0);
+      console.log(`📄 Found ${messagesWithExtractedText.length} messages with extracted text`);
       
-      // Filter extracted content to only include items that correspond to existing messages
-      const validExtractedContent = allExtractedContent.filter(extractedItem => {
-        // Check if there's a corresponding message in the database
-        const hasCorrespondingMessage = allMessages.some(message => {
-          // Match by messageId if available, or by content similarity
-          if (extractedItem.messageId) {
-            return message.id === extractedItem.messageId;
-          }
-          // Fallback: check if the extracted content title/URL matches message content
-          if (message.type === 'link' && extractedItem.url) {
-            return message.file_url === extractedItem.url;
-          }
-          if (message.type === 'file' && extractedItem.filename) {
-            return message.filename === extractedItem.filename;
-          }
-          return false;
+      messagesWithExtractedText.forEach((msg, index) => {
+        console.log(`📋 Message ${index + 1}:`, {
+          id: msg.id,
+          type: msg.type,
+          title: msg.extracted_title || 'No title',
+          extractedTextLength: msg.extracted_text?.length || 0,
+          wordCount: msg.word_count || 0,
+          extractionStatus: msg.extraction_status || 'unknown'
         });
-        return hasCorrespondingMessage;
       });
+
+      // PRIORITY 1: Search in recent messages with extracted_text first
+      const relevantContent = allMessages.filter(msg => {
+        const hasExtractedText = msg.extracted_text && msg.extracted_text.length > 100;
+        const hasRelevantContent = msg.content && msg.content.toLowerCase().includes(userQuery.toLowerCase());
+        const hasRelevantExtractedText = hasExtractedText && msg.extracted_text!.toLowerCase().includes(userQuery.toLowerCase());
+        
+        return hasRelevantContent || hasRelevantExtractedText;
+      });
+
+      console.log(`🎯 Found ${relevantContent.length} relevant messages with content matching query`);
+
+      // If no direct matches, try semantic search in extracted text
+      if (relevantContent.length === 0) {
+        console.log('🔍 No direct matches found, performing semantic search in extracted content...');
+        
+        const semanticMatches = allMessages.filter(msg => {
+          if (!msg.extracted_text || msg.extracted_text.length < 50) return false;
+          
+          // Simple keyword matching for now
+          const queryWords = userQuery.toLowerCase().split(' ').filter(word => word.length > 3);
+          const extractedText = msg.extracted_text.toLowerCase();
+          
+          return queryWords.some(word => extractedText.includes(word));
+        });
+        
+        console.log(`🧠 Found ${semanticMatches.length} semantic matches`);
+        relevantContent.push(...semanticMatches);
+      }
+
+      // Get recent conversation context
+      const recentMessages = allMessages.slice(-10);
       
-      console.log('📚 Found extracted content items:', allExtractedContent.length);
-      console.log('✅ Valid extracted content items:', validExtractedContent.length);
+      // Generate content summary
+      const contentSummary = this.generateContentSummary(relevantContent);
       
-      // Perform intelligent content search including temporary storage
-      const relevantContent = await this.searchRelevantContentWithTemp(userMessage, allMessages, validExtractedContent);
+      // Generate user patterns
+      const userPatterns = this.generateUserPatterns(allMessages);
       
-      // Generate content summary including extracted content
-      const contentSummary = await this.generateContentSummaryWithTemp(allMessages, validExtractedContent);
-      
-      // Analyze user patterns
-      const userPatterns = await this.analyzeUserPatternsWithTemp(allMessages, validExtractedContent);
-      
-      console.log('📊 Database context built:', {
+      console.log('📊 Database context built successfully:', {
         totalMessages: allMessages.length,
-        extractedItems: allExtractedContent.length,
-        validExtractedItems: validExtractedContent.length,
         relevantContent: relevantContent.length,
-        recentMessages: recentMessages.length
+        recentMessages: recentMessages.length,
+        messagesWithExtractedText: messagesWithExtractedText.length
       });
-      
+
       return {
-        recentMessages,
         relevantContent,
+        recentMessages,
         contentSummary,
         userPatterns
       };
     } catch (error) {
       console.error('❌ Error building database context:', error);
-      // Return minimal context on error
-      const recentMessages = await this.chatService.getUserMessages(10);
       return {
-        recentMessages,
         relevantContent: [],
-        contentSummary: 'Unable to analyze content summary',
-        userPatterns: 'Unable to analyze user patterns'
+        recentMessages: [],
+        contentSummary: 'Unable to analyze content',
+        userPatterns: 'Unable to analyze patterns'
       };
     }
   }
 
-  // Enhanced search that uses database extracted_text directly
+  // Helper method to generate content summary
+  private generateContentSummary(relevantContent: ChatMessage[]): string {
+    if (relevantContent.length === 0) return 'No relevant content found';
+    
+    const contentTypes = relevantContent.map(msg => msg.type);
+    const uniqueTypes = [...new Set(contentTypes)];
+    
+    return `Found ${relevantContent.length} relevant items: ${uniqueTypes.join(', ')}`;
+  }
+
+  // Helper method to generate user patterns
+  private generateUserPatterns(allMessages: ChatMessage[]): string {
+    if (allMessages.length === 0) return 'No user patterns available';
+    
+    const recentMessages = allMessages.slice(-20);
+    const contentTypes = recentMessages.map(msg => msg.type);
+    const typeCounts = contentTypes.reduce((acc, type) => {
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    const mostCommonType = Object.entries(typeCounts).sort(([,a], [,b]) => b - a)[0];
+    return `User primarily saves ${mostCommonType?.[0] || 'content'} (${mostCommonType?.[1] || 0} items)`;
+  }
+
+  // Enhanced search that prioritizes recent, relevant content
   private async searchRelevantContentWithTemp(query: string, allMessages: ChatMessage[], extractedContent: any[]): Promise<ChatMessage[]> {
     try {
-      console.log('🔎 DEBUGGING: Searching for relevant content in database extracted_text...');
-      console.log('🔎 DEBUGGING: Query:', query);
-      console.log('🔎 DEBUGGING: Total messages to search:', allMessages.length);
+      console.log('🔎 ENHANCED SEARCH: Searching for relevant content...');
+      console.log('🔎 Query:', query);
+      console.log('🔎 Total messages to search:', allMessages.length);
       
-      // Extract keywords from user query
+      // Get recent messages first (last 30 messages for better coverage)
+      const recentMessages = allMessages.slice(-30);
+      console.log('📅 Focusing on recent 30 messages first');
+      
+      // CRITICAL: Check if user is asking about a recently uploaded document
+      const isDocumentQuery = query.toLowerCase().includes('document') || 
+                              query.toLowerCase().includes('transcript') ||
+                              query.toLowerCase().includes('file') ||
+                              query.toLowerCase().includes('pdf') ||
+                              query.toLowerCase().includes('article') ||
+                              query.toLowerCase().includes('text') ||
+                              query.toLowerCase().includes('content') ||
+                              query.toLowerCase().includes('it') ||
+                              query.toLowerCase().includes('this') ||
+                              query.toLowerCase().includes('that');
+      
+      if (isDocumentQuery) {
+        console.log('📄 DOCUMENT QUERY DETECTED - Prioritizing recently uploaded content');
+        
+        // Get the most recently uploaded documents/files/links with extracted content
+        const recentUploads = recentMessages
+          .filter(msg => 
+            (msg.type === 'file' || msg.type === 'link') && 
+            msg.extracted_text && 
+            msg.extracted_text.length > 100
+          )
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 3); // Get top 3 most recent uploads
+        
+        if (recentUploads.length > 0) {
+          console.log('🎯 FOUND RECENT UPLOADS WITH EXTRACTED CONTENT:', recentUploads.length);
+          recentUploads.forEach((msg, index) => {
+            console.log(`📄 Recent upload ${index + 1}:`, {
+              id: msg.id,
+              type: msg.type,
+              title: msg.extracted_title || 'No title',
+              filename: msg.filename || 'No filename',
+              extractedLength: msg.extracted_text?.length || 0,
+              wordCount: msg.word_count || 0,
+              created: msg.created_at
+            });
+          });
+          
+          // Return recent uploads - they are likely what the user is asking about
+          return recentUploads;
+        }
+      }
+      
+      // Extract keywords from user query for semantic search
       const keywords = await this.extractKeywords(query);
-      console.log('🏷️ DEBUGGING: Extracted keywords:', keywords);
+      console.log('🏷️ Keywords:', keywords);
       
-      // Search directly in database messages with extracted_text
-      const messagesWithExtractedText = allMessages.filter(msg => 
+      // PRIORITY 1: Search in recent messages with extracted_text first
+      const recentMessagesWithContent = recentMessages.filter(msg => 
         msg.extracted_text && msg.extracted_text.length > 100
       );
       
-      console.log('🔍 DEBUGGING: Found', messagesWithExtractedText.length, 'messages with extracted_text in database');
+      console.log('🔍 PRIORITY 1: Recent messages with content:', recentMessagesWithContent.length);
       
-      // Log details of messages with extracted text
-      messagesWithExtractedText.forEach((msg, index) => {
-        console.log(`📄 DEBUGGING: Message ${index + 1} with extracted_text:`, {
-          id: msg.id,
-          type: msg.type,
-          title: msg.extracted_title,
-          textLength: msg.extracted_text?.length,
-          wordCount: msg.word_count,
-          contentPreview: msg.content.substring(0, 100),
-          extractedTextPreview: msg.extracted_text?.substring(0, 200) + '...'
+      if (recentMessagesWithContent.length > 0) {
+        // Log what we found for debugging
+        recentMessagesWithContent.forEach((msg, index) => {
+          console.log(`📄 Content message ${index + 1}:`, {
+            id: msg.id,
+            type: msg.type,
+            title: msg.extracted_title || 'No title',
+            extractedLength: msg.extracted_text?.length || 0,
+            created: msg.created_at
+          });
         });
-      });
+      }
       
-      // Search in extracted_text content from database
-      const extractedTextMatches = messagesWithExtractedText.filter(msg => {
+      const recentMatches = recentMessagesWithContent.filter(msg => {
         const searchText = (
           (msg.extracted_text || '') + ' ' + 
           (msg.extracted_title || '') + ' ' + 
-          (msg.extracted_author || '') + ' ' +
-          (msg.content || '')
+          (msg.content || '') + ' ' +
+          (msg.filename || '')
         ).toLowerCase();
         
-        console.log(`🔍 DEBUGGING: Searching in message ${msg.id} with search text length:`, searchText.length);
-        
-        const hasKeywordMatch = keywords.some(keyword => {
-          const match = searchText.includes(keyword.toLowerCase());
-          console.log(`🔍 DEBUGGING: Keyword "${keyword}" match in message ${msg.id}:`, match);
-          return match;
-        });
-        
-        if (hasKeywordMatch) {
-          console.log('🎯 DEBUGGING: Found match in extracted_text:', {
+        const hasMatch = keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
+        if (hasMatch) {
+          console.log('🎯 PRIORITY 1 MATCH:', {
             id: msg.id,
-            title: msg.extracted_title,
-            textLength: msg.extracted_text?.length,
-            wordCount: msg.word_count,
+            title: msg.extracted_title || msg.filename || 'No title',
+            created: msg.created_at,
             type: msg.type,
             matchingKeywords: keywords.filter(k => searchText.includes(k.toLowerCase()))
           });
         }
-        
-        return hasKeywordMatch;
+        return hasMatch;
       });
       
-      console.log('🎯 DEBUGGING: Found', extractedTextMatches.length, 'matches in database extracted_text');
-
-      // If no matches found, let's try a broader search
-      if (extractedTextMatches.length === 0) {
-        console.log('⚠️ DEBUGGING: No keyword matches found, trying broader search...');
+      // If we have recent matches, prioritize them heavily
+      if (recentMatches.length > 0) {
+        console.log('✅ PRIORITY 1: Found', recentMatches.length, 'recent relevant matches');
         
-        // Try searching for any of the query words individually
-        const queryWords = query.toLowerCase().split(' ').filter(word => word.length > 3);
-        console.log('🔍 DEBUGGING: Query words:', queryWords);
+        // Sort recent matches by most recent first
+        const sortedRecentMatches = recentMatches.sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
         
-        const broadMatches = messagesWithExtractedText.filter(msg => {
-          const searchText = (
-            (msg.extracted_text || '') + ' ' + 
-            (msg.extracted_title || '') + ' ' + 
-            (msg.content || '')
-          ).toLowerCase();
-          
-          const hasWordMatch = queryWords.some(word => searchText.includes(word));
-          if (hasWordMatch) {
-            console.log('🎯 DEBUGGING: Broad match found in message:', msg.id, 'for words:', queryWords.filter(w => searchText.includes(w)));
-          }
-          return hasWordMatch;
-        });
-        
-        console.log('🎯 DEBUGGING: Broad search found', broadMatches.length, 'matches');
-        
-        // Use broad matches if available
-        if (broadMatches.length > 0) {
-          return broadMatches.slice(0, 5);
-        }
+        // Return only the most recent and relevant, limit to 3 for focus
+        return sortedRecentMatches.slice(0, 3);
       }
-
-      // Search by content keywords in regular messages (including image analysis)
-      const contentMatches = allMessages.filter(msg => {
-        // Skip messages we already found in extracted text search
-        if (extractedTextMatches.some(match => match.id === msg.id)) {
-          return false;
-        }
+      
+      // PRIORITY 2: If no keyword matches but user seems to be asking about recent content
+      if (isDocumentQuery && recentMessagesWithContent.length > 0) {
+        console.log('🔍 PRIORITY 2: No keyword matches but document query - returning recent content');
         
+        // Return most recent content even without keyword matches
+        const sortedByRecency = recentMessagesWithContent.sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        
+        return sortedByRecency.slice(0, 2);
+      }
+      
+      // PRIORITY 3: Search in all messages but still prioritize recent
+      console.log('🔍 PRIORITY 3: Searching all messages...');
+      
+      const allMessagesWithContent = allMessages.filter(msg => 
+        msg.extracted_text && msg.extracted_text.length > 100
+      );
+      
+      const allMatches = allMessagesWithContent.filter(msg => {
         const searchText = (
-          msg.content + ' ' + 
-          (msg.ai_analysis || '') + ' ' + 
-          (msg.tags?.join(' ') || '') + ' ' +
-          // Include image analysis content if it's an image message
-          (msg.type === 'image' && msg.content.includes('Image shared -') ? 
-            msg.content.replace('Image shared - ', '') : '')
+          (msg.extracted_text || '') + ' ' + 
+          (msg.extracted_title || '') + ' ' + 
+          (msg.content || '')
         ).toLowerCase();
+        
         return keywords.some(keyword => searchText.includes(keyword.toLowerCase()));
       });
       
-      // Search by tags if keywords found in tags
-      const tagMatches = await this.searchByTags(keywords);
+      if (allMatches.length > 0) {
+        console.log('✅ PRIORITY 3: Found', allMatches.length, 'total matches');
+        
+        // Sort by recency and limit to top 3
+        const sortedAllMatches = allMatches.sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
+        
+        return sortedAllMatches.slice(0, 3);
+      }
       
-      // Combine all results with priority to extracted content
-      const allMatches = [...extractedTextMatches, ...contentMatches, ...tagMatches];
-      const uniqueMatches = allMatches.filter((msg, index, self) => 
-        index === self.findIndex(m => m.id === msg.id)
+      // PRIORITY 4: Fallback to any recent content
+      console.log('🔍 PRIORITY 4: Fallback to any recent uploads...');
+      
+      const recentAnyContent = recentMessages.filter(msg => 
+        msg.type === 'file' || msg.type === 'link' || msg.type === 'image'
       );
       
-      // Sort by relevance (extracted content first, then most recent)
-      const sortedMatches = uniqueMatches
-        .sort((a, b) => {
-          // Prioritize items with extracted content
-          if (a.extracted_text && !b.extracted_text) return -1;
-          if (!a.extracted_text && b.extracted_text) return 1;
-          // Then by recency
-          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-        })
-        .slice(0, 10); // Limit to top 10 most relevant
+      if (recentAnyContent.length > 0) {
+        console.log('✅ PRIORITY 4: Found', recentAnyContent.length, 'recent uploads of any type');
+        return recentAnyContent
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 2);
+      }
       
-      console.log('✅ DEBUGGING: Final sorted matches:', sortedMatches.length);
-      sortedMatches.forEach((msg, index) => {
-        console.log(`📄 DEBUGGING: Result ${index + 1}:`, {
-          id: msg.id,
-          type: msg.type,
-          title: msg.extracted_title || 'No title',
-          hasExtractedText: !!msg.extracted_text,
-          extractedTextLength: msg.extracted_text?.length || 0,
-          wordCount: msg.word_count || 0
-        });
-      });
+      console.log('⚠️ No relevant content found');
+      return [];
       
-      return sortedMatches;
     } catch (error) {
-      console.error('❌ Error searching relevant content:', error);
+      console.error('❌ Error in enhanced search:', error);
       return [];
     }
   }
@@ -507,15 +587,36 @@ Think: texting a friend who's good at organizing stuff.`
         messages: [
           {
             role: 'system',
-            content: 'You are a tagging expert. Suggest 3-5 relevant, concise tags for organizing content. Return only the tags as a comma-separated list, no explanations.'
+            content: `You are an expert content curator and tagging specialist. Your goal is to create ONE highly relevant, specific tag that best represents the core essence and primary topic of the content.
+
+INSTRUCTIONS:
+- Analyze the main subject, theme, or purpose of the content
+- Focus on what this content is MOST ABOUT (not every detail)
+- Prefer specific topics over generic categories
+- Choose tags that would be meaningful for organizing and finding this content later
+- Use clear, descriptive terms that capture the essence
+- Return ONLY ONE tag - the most relevant one
+- Make it 1-3 words maximum
+- Use proper capitalization (Title Case)
+- No explanations, just the single best tag
+
+EXAMPLES:
+- Article about sustainable energy → "Clean Energy"
+- Recipe for pasta → "Italian Cooking" 
+- Tutorial on React → "Web Development"
+- News about AI breakthrough → "Artificial Intelligence"
+- Financial market analysis → "Market Analysis"
+- Travel guide for Japan → "Japan Travel"
+- Workout routine → "Fitness"
+- Product review → "Product Review"`
           },
           {
             role: 'user',
-            content: `Suggest relevant tags for this ${contentType}:\n${contextDescription}`
+            content: `Analyze this ${contentType} and return the single most relevant tag:\n${contextDescription}`
           }
         ],
-        max_tokens: 50,
-        temperature: 0.3,
+        max_tokens: 10,
+        temperature: 0.2,
       });
 
       const response = completion.choices[0]?.message?.content;
@@ -523,12 +624,9 @@ Think: texting a friend who's good at organizing stuff.`
         return [];
       }
 
-      // Parse the response into individual tags
-      return response
-        .split(',')
-        .map(tag => tag.trim().toLowerCase())
-        .filter(tag => tag.length > 0 && tag.length <= 20)
-        .slice(0, 5); // Limit to 5 tags
+      // Parse and clean the response - should only be 1 tag
+      const cleanedTag = response.trim().replace(/['"]/g, '');
+      return cleanedTag.length > 0 && cleanedTag.length <= 25 ? [cleanedTag] : [];
     } catch (error) {
       console.error('Error suggesting tags:', error);
       return [];
@@ -543,15 +641,38 @@ Think: texting a friend who's good at organizing stuff.`
         messages: [
           {
             role: 'system',
-            content: 'You are a smart tagging assistant. Analyze the content and suggest 4-6 relevant, specific tags that would help organize this content. Focus on topics, categories, and key themes. Return only the tags as a comma-separated list, no explanations.'
+            content: `You are an expert content curator. Analyze the content deeply and suggest ONE primary tag that best captures what this content is fundamentally about.
+
+ANALYSIS APPROACH:
+- Read the entire content to understand the main theme
+- Identify the primary subject matter, not secondary details
+- Consider the content's purpose and target audience
+- Focus on what someone would remember this content for
+- Choose the most specific yet broadly applicable tag
+
+TAG REQUIREMENTS:
+- Return exactly ONE tag only
+- Make it highly specific and descriptive
+- Use 1-3 words maximum
+- Proper Title Case capitalization
+- Must be meaningful for content organization
+- Should help users find this content later
+
+EXAMPLES:
+- Academic paper on neural networks → "Machine Learning"
+- Blog post about startup funding → "Venture Capital" 
+- Tutorial on photography techniques → "Photography Skills"
+- News about climate policy → "Climate Policy"
+- Recipe with cooking instructions → "Cooking Recipes"
+- Investment advice article → "Investment Strategy"`
           },
           {
             role: 'user',
-            content: `Analyze this content and suggest relevant tags:\n\n${contentToAnalyze}`
+            content: `Analyze this content and return the single most relevant tag:\n\n${contentToAnalyze}`
           }
         ],
-        max_tokens: 60,
-        temperature: 0.3,
+        max_tokens: 8,
+        temperature: 0.1,
       });
 
       const response = completion.choices[0]?.message?.content;
@@ -559,14 +680,69 @@ Think: texting a friend who's good at organizing stuff.`
         return [];
       }
 
-      // Parse the response into individual tags
-      return response
-        .split(',')
-        .map(tag => tag.trim())
-        .filter(tag => tag.length > 0 && tag.length <= 25)
-        .slice(0, 6); // Limit to 6 tags
+      // Parse and clean the response - should only be 1 tag
+      const cleanedTag = response.trim().replace(/['"]/g, '');
+      return cleanedTag.length > 0 && cleanedTag.length <= 25 ? [cleanedTag] : [];
     } catch (error) {
       console.error('Error generating tag suggestions:', error);
+      return [];
+    }
+  }
+
+  // Generate multiple AI tags for suggestions
+  async generateMultipleTagSuggestions(contentToAnalyze: string, count: number = 2): Promise<string[]> {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are an expert content curator. Analyze the content deeply and suggest ${count} relevant tags that best capture different aspects of this content.
+
+ANALYSIS APPROACH:
+- Read the entire content to understand multiple themes
+- Identify both primary and secondary subject matters
+- Consider the content's purpose, audience, and context
+- Focus on what someone would remember this content for
+- Choose specific yet broadly applicable tags
+
+TAG REQUIREMENTS:
+- Return exactly ${count} tags separated by commas
+- Make each tag highly specific and descriptive
+- Use 1-3 words maximum per tag
+- Proper Title Case capitalization
+- Must be meaningful for content organization
+- Should help users find this content later
+- Tags should be different from each other
+
+EXAMPLES:
+- Academic paper on neural networks → "Machine Learning, Research"
+- Blog post about startup funding → "Venture Capital, Business"
+- Tutorial on photography techniques → "Photography, Tutorial"`
+          },
+          {
+            role: 'user',
+            content: `Analyze this content and return ${count} relevant tags separated by commas:\n\n${contentToAnalyze}`
+          }
+        ],
+        max_tokens: 20,
+        temperature: 0.2,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        return [];
+      }
+
+      // Parse and clean the response - should be multiple tags separated by commas
+      const tags = response.split(',')
+        .map(tag => tag.trim().replace(/['"]/g, ''))
+        .filter(tag => tag.length > 0 && tag.length <= 25)
+        .slice(0, count);
+      
+      return tags;
+    } catch (error) {
+      console.error('OpenAI multiple tag generation failed:', error);
       return [];
     }
   }
@@ -679,76 +855,65 @@ Think: texting a friend who's good at organizing stuff.`
   // Enhanced response generation with full database context and Perplexity
   async generateResponseWithDatabaseContext(userMessage: string): Promise<string> {
     try {
-      console.log('🤖 Generating AI response with full database context and Perplexity...');
+      console.log('🤖 Generating AI response with conversation flow handling...');
+      console.log('📊 Current conversation state:', this.conversationState);
       
-      // Check if the query requires real-time information
-      const requiresRealTimeInfo = this.detectRealTimeQuery(userMessage);
+      // CRITICAL FIX: Check if this is a follow-up response FIRST
+      const isFollowUp = this.detectFollowUpResponse(userMessage);
+      const isPositiveResponse = this.detectPositiveResponse(userMessage);
       
-      let realTimeContext = '';
-      if (requiresRealTimeInfo) {
-        console.log('🔍 Query requires real-time information, using Perplexity...');
-        try {
-          const PerplexityService = await import('./perplexity');
-          const perplexityService = PerplexityService.default.getInstance();
-          
-          const searchResult = await perplexityService.searchTopic(userMessage);
-          realTimeContext = `\n\nREAL-TIME INFORMATION FROM PERPLEXITY:\n${searchResult.content}\n\nKey points: ${searchResult.keyPoints.join(', ')}`;
-          
-          console.log('✅ Real-time context added from Perplexity');
-        } catch (perplexityError) {
-          console.error('❌ Perplexity search failed:', perplexityError);
-          realTimeContext = '\n\nNote: Real-time information search failed, using stored content only.';
-        }
-      }
-      
-      // Build comprehensive database context
-      const dbContext = await this.buildDatabaseContext(userMessage);
-      
-      // Format context for AI
-      const contextPrompt = this.formatDatabaseContextForAI(dbContext, userMessage) + realTimeContext;
-      
-      // Log the actual prompt being sent to AI for debugging
-      console.log('📝 PROMPT BEING SENT TO AI (first 500 chars):', contextPrompt.substring(0, 500));
-      
-      // Generate response using full context
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `You're Bill, a chill personal assistant. Talk like a helpful friend, not a formal AI.
-
-Keep it SHORT and natural:
-- 1-2 sentences max unless they ask for details
-- Use casual language like "I see you saved..." or "Looks like..."
-- No formal phrases or AI-speak
-- If you don't know something, just say "I don't have that info" 
-- Be helpful but relaxed
-
-Think: texting a friend who's good at organizing stuff.`
-          },
-          {
-            role: 'user',
-            content: contextPrompt
-          }
-        ],
-        max_tokens: 300,
-        temperature: 0.7,
+      console.log('🔍 Conversation analysis:', {
+        userMessage: userMessage,
+        isFollowUp,
+        isPositiveResponse,
+        lastActionOffered: this.conversationState.lastActionOffered,
+        followUpExpected: this.conversationState.followUpExpected,
+        lastAIResponse: this.conversationState.lastAIResponse.substring(0, 100) + '...'
       });
-
-      const response = completion.choices[0]?.message?.content;
-      if (!response) {
-        throw new Error('No response generated');
+      
+      let response: string;
+      
+      // PRIORITY 1: Handle follow-up responses (yes/no/sure etc.) BEFORE database search
+      if (isFollowUp && this.conversationState.followUpExpected && this.conversationState.lastActionOffered) {
+        console.log('✅ PRIORITY 1: Detected follow-up response to offered action');
+        console.log('🎯 Last action offered:', this.conversationState.lastActionOffered);
+        
+        // Handle follow-up response - bypass database search entirely
+        response = await this.handleFollowUpResponse(userMessage, isPositiveResponse);
+        
+      } else if (isFollowUp && this.conversationState.followUpExpected) {
+        console.log('✅ PRIORITY 2: Detected follow-up but no clear action - continuing conversation');
+        
+        // Continue conversation context without full database search
+        response = await this.handleConversationContinuation(userMessage);
+        
+      } else {
+        console.log('🔍 PRIORITY 3: New query - performing database search');
+        
+        // Handle new query with database search
+        response = await this.handleNewQueryWithFallback(userMessage);
       }
-
-      console.log('✨ Database-enhanced AI response generated successfully');
+      
+      // Update conversation state
+      this.conversationState.lastAIResponse = response;
+      this.conversationState.lastUserQuery = userMessage;
+      this.conversationState.followUpExpected = this.detectFollowUpInResponse(response);
+      this.conversationState.lastActionOffered = this.extractLastAction(response);
+      
+      console.log('📊 Updated conversation state:', {
+        followUpExpected: this.conversationState.followUpExpected,
+        lastActionOffered: this.conversationState.lastActionOffered,
+        responsePreview: response.substring(0, 100) + '...'
+      });
+      
+      console.log('✨ AI response generated with improved conversation flow handling');
       return response;
     } catch (error: any) {
-      console.error('❌ Error generating database-enhanced response:', error);
+      console.error('❌ Error generating conversation-aware response:', error);
       
       // Fallback to simple response
       console.log('🔄 Falling back to simple response generation...');
-      return await this.generateResponse(userMessage);
+      return await this.generateFallbackResponse(userMessage);
     }
   }
 
@@ -772,7 +937,12 @@ Think: texting a friend who's good at organizing stuff.`
           prompt += `Word Count: ${msg.word_count || 'Unknown'}\n`;
           prompt += `Content Type: ${msg.type.toUpperCase()}\n`;
           prompt += `URL: ${msg.file_url || 'N/A'}\n\n`;
-          prompt += `FULL TEXT CONTENT:\n${msg.extracted_text}\n`;
+          // Limit content length to avoid overwhelming the AI and encourage concise responses
+          const contentPreview = msg.extracted_text.length > 1000 
+            ? msg.extracted_text.substring(0, 1000) + '...[content truncated for brevity]'
+            : msg.extracted_text;
+          prompt += `CONTENT SUMMARY:\n${contentPreview}\n`;
+          // Note: user_intent field not available in current schema
           prompt += `---END OF DOCUMENT---\n\n`;
           contentIndex++;
         }
@@ -791,6 +961,7 @@ Think: texting a friend who's good at organizing stuff.`
           if (msg.tags && msg.tags.length > 0) {
             prompt += `Tags: ${msg.tags.join(', ')}\n`;
           }
+          // Note: user_intent field not available in current schema
           prompt += `---END OF IMAGE ANALYSIS---\n\n`;
           contentIndex++;
         }
@@ -805,6 +976,7 @@ Think: texting a friend who's good at organizing stuff.`
           if (msg.tags && msg.tags.length > 0) {
             prompt += `Tags: ${msg.tags.join(', ')}\n`;
           }
+          // Note: user_intent field not available in current schema
           prompt += `---END OF LINK---\n\n`;
           contentIndex++;
           hasContent = true;
@@ -836,18 +1008,141 @@ Think: texting a friend who's good at organizing stuff.`
       prompt += `NO RELEVANT SAVED CONTENT FOUND\n\n`;
     }
     
-    // Add minimal context at the end
-    prompt += `RECENT CONVERSATION:\n`;
+    // Enhanced conversation context for better continuity
+    prompt += `RECENT CONVERSATION CONTEXT:\n`;
     if (context.recentMessages.length > 0) {
-      context.recentMessages.slice(-3).forEach(msg => {
+      // Show more conversation context to help with continuity
+      const conversationMessages = context.recentMessages.slice(-5);
+      conversationMessages.forEach(msg => {
         const role = msg.is_bot ? 'Bill' : 'User';
-        prompt += `${role}: ${msg.content.substring(0, 100)}${msg.content.length > 100 ? '...' : ''}\n`;
+        // Include full content for recent messages to maintain context
+        prompt += `${role}: ${msg.content}\n`;
       });
+    }
+    
+    // Detect if user is responding positively to a follow-up
+    const isPositiveResponse = this.detectPositiveResponse(userMessage);
+    const lastBotMessage = context.recentMessages.filter(m => m.is_bot).slice(-1)[0];
+    
+    if (isPositiveResponse && lastBotMessage) {
+      prompt += `\nCONVERSATION CONTINUITY NOTE:
+User just responded positively ("${userMessage}") to your previous response: "${lastBotMessage.content}"
+Continue naturally from where you left off - don't repeat information you already provided.
+If you offered a specific action (like "find similar articles" or "check other PDFs"), DO THAT NOW.
+Build on the conversation, don't start over.\n`;
     }
     
     prompt += `\nRespond naturally using the content above. If you have the full document text, answer specifically from that content. If you only have basic info, say so and offer to help differently.`;
     
     return prompt;
+  }
+
+  // Detect if user message is a follow-up response (yes, no, sure, etc.)
+  private detectFollowUpResponse(userMessage: string): boolean {
+    const followUpKeywords = [
+      'yes', 'yeah', 'sure', 'okay', 'ok', 'please', 'do it', 'go ahead',
+      'no', 'nah', 'nope', 'not really', 'skip', 'pass',
+      'more', 'details', 'tell me more', 'explain', 'elaborate',
+      'similar', 'other', 'different', 'another', 'next'
+    ];
+    
+    const lowerMessage = userMessage.toLowerCase().trim();
+    
+    // Enhanced detection: prioritize short responses that are clearly follow-ups
+    const isShortResponse = userMessage.length <= 20;
+    const isExactMatch = followUpKeywords.includes(lowerMessage);
+    const startsWithKeyword = followUpKeywords.some(keyword => lowerMessage.startsWith(keyword + ' '));
+    const containsKeyword = followUpKeywords.some(keyword => lowerMessage.includes(keyword));
+    
+    // Short responses with keywords are almost always follow-ups
+    let isFollowUp = false;
+    if (isShortResponse && (isExactMatch || startsWithKeyword)) {
+      isFollowUp = true;
+    } else if (isExactMatch) {
+      isFollowUp = true;
+    } else if (containsKeyword && userMessage.length <= 50) {
+      isFollowUp = true;
+    }
+    
+    console.log('🔍 Enhanced follow-up detection:', {
+      message: userMessage,
+      messageLength: userMessage.length,
+      lowerMessage,
+      isShortResponse,
+      isExactMatch,
+      startsWithKeyword,
+      containsKeyword,
+      isFollowUp,
+      matchedKeywords: followUpKeywords.filter(keyword => 
+        lowerMessage === keyword || 
+        lowerMessage.startsWith(keyword + ' ') ||
+        lowerMessage.includes(keyword)
+      )
+    });
+    
+    return isFollowUp;
+  }
+
+  // Detect if user message is a positive response to a follow-up
+  private detectPositiveResponse(userMessage: string): boolean {
+    const positiveKeywords = [
+      'yes', 'yeah', 'sure', 'okay', 'ok', 'please', 'do it', 'go ahead',
+      'more', 'details', 'tell me more', 'explain', 'elaborate',
+      'similar', 'other', 'different', 'another', 'next'
+    ];
+    
+    const lowerMessage = userMessage.toLowerCase().trim();
+    return positiveKeywords.some(keyword => lowerMessage.includes(keyword));
+  }
+
+  // Extract the action from the last AI response
+  private extractLastAction(aiResponse: string): string {
+    // Look for action phrases in the AI response - ENHANCED PATTERNS
+    const actionPatterns = [
+      /want me to (.+?)\?/i,
+      /should i (.+?)\?/i,
+      /would you like me to (.+?)\?/i,
+      /can i (.+?)\?/i,
+      /look for (.+?)\?/i,
+      /search for (.+?)\?/i,
+      /find (.+?)\?/i,
+      /suggest (.+?)\?/i,
+      /recommend (.+?)\?/i,
+      /provide (.+?)\?/i,
+      /give you (.+?)\?/i,
+      /show you (.+?)\?/i,
+      /help you (.+?)\?/i
+    ];
+    
+    for (const pattern of actionPatterns) {
+      const match = aiResponse.match(pattern);
+      if (match && match[1]) {
+        const action = match[1].trim();
+        console.log('🎯 Extracted action:', action);
+        return action;
+      }
+    }
+    
+    // CRITICAL: Also look for direct offers without question marks
+    const directOfferPatterns = [
+      /I can suggest (.+?)[.!]/i,
+      /I can recommend (.+?)[.!]/i,
+      /I'll suggest (.+?)[.!]/i,
+      /I'll recommend (.+?)[.!]/i,
+      /Let me suggest (.+?)[.!]/i
+    ];
+    
+    for (const pattern of directOfferPatterns) {
+      const match = aiResponse.match(pattern);
+      if (match && match[1]) {
+        const action = `suggest ${match[1].trim()}`;
+        console.log('🎯 Extracted direct offer:', action);
+        return action;
+      }
+    }
+    
+    console.log('❌ No action extracted from response:', aiResponse.substring(0, 100) + '...');
+    return '';
   }
 
   // Convert chat messages to OpenAI format (keeping original for simple cases)
@@ -873,6 +1168,130 @@ Think: texting a friend who's good at organizing stuff.`
     
     const lowerQuery = query.toLowerCase();
     return realTimeKeywords.some(keyword => lowerQuery.includes(keyword));
+  }
+
+  // Generate focused response for reply functionality
+  async generateFocusedResponse(systemPrompt: string, userPrompt: string): Promise<string> {
+    try {
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt
+          },
+          {
+            role: 'user',
+            content: userPrompt
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        throw new Error('No response generated');
+      }
+
+      return response;
+    } catch (error) {
+      console.error('❌ Error generating focused response:', error);
+      throw error;
+    }
+  }
+
+  // Generate intent-based follow-up question for a specific message
+  async generateIntentBasedFollowUp(
+    messageContent: string, 
+    messageType: string, 
+    userIntent?: string, 
+    tags?: string[]
+  ): Promise<string> {
+    try {
+      console.log('🎯 Generating intent-based follow-up for:', { messageType, userIntent, tags });
+
+      // Build context from user intent and tags
+      let contextClues = '';
+      if (userIntent) {
+        contextClues += `User's intent/note: "${userIntent}"`;
+      }
+      if (tags && tags.length > 0) {
+        contextClues += `${contextClues ? '\n' : ''}User's tags: ${tags.join(', ')}`;
+      }
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are Bill, an AI assistant generating personalized follow-up questions based on user intent and context.
+
+INSTRUCTIONS:
+- Generate ONE specific, actionable follow-up question based on the user's intent and content
+- Make it relevant to what the user seems to want to do with this content
+- Keep it conversational and helpful (8-15 words)
+- Consider the user's custom note/intent if provided
+- Use the tags to understand the user's categorization intent
+
+INTENT-BASED PERSONALIZATION:
+- If user_intent suggests research/learning → suggest deeper analysis or connections
+- If user_intent suggests work/productivity → suggest organization or application  
+- If user_intent suggests personal interest → suggest exploration or related content
+- If user_intent suggests reference → suggest retrieval or comparison scenarios
+- If no specific intent → generate relevant content-specific question
+
+EXAMPLES:
+- Intent "for work presentation" → "Want me to extract key points for your presentation?"
+- Intent "weekend reading" → "Should I find similar articles for your reading list?"
+- Intent "research project" → "Need me to connect this with your other research?"
+- No intent, but tagged "fitness" → "Want suggestions for related workout content?"
+
+Return only the follow-up question, no explanations.`
+          },
+          {
+            role: 'user',
+            content: `Content: ${messageContent.substring(0, 200)}
+Type: ${messageType}
+${contextClues || 'No specific intent provided'}
+
+Generate a personalized follow-up question:`
+          }
+        ],
+        max_tokens: 30,
+        temperature: 0.7,
+      });
+
+      const followUp = completion.choices[0]?.message?.content?.trim();
+      
+      if (!followUp || !followUp.includes('?')) {
+        // Fallback to content-type specific questions
+        return this.getDefaultFollowUpByType(messageType, tags);
+      }
+
+      console.log('✅ Generated intent-based follow-up:', followUp);
+      return followUp;
+
+    } catch (error) {
+      console.error('❌ Error generating intent-based follow-up:', error);
+      return this.getDefaultFollowUpByType(messageType, tags);
+    }
+  }
+
+  // Fallback follow-up questions by content type
+  private getDefaultFollowUpByType(messageType: string, tags?: string[]): string {
+    const tagContext = tags && tags.length > 0 ? ` ${tags[0].toLowerCase()}` : '';
+    
+    switch (messageType) {
+      case 'image':
+        return `Want me to analyze this${tagContext} image in more detail?`;
+      case 'file':
+        return `Should I extract key insights from this${tagContext} document?`;
+      case 'link':
+        return `Want me to find related${tagContext} articles or content?`;
+      default:
+        return `Need help organizing this${tagContext} content?`;
+    }
   }
 
   // Generate relevant questions based on user's uploaded content
@@ -1202,6 +1621,737 @@ Rules:
     }
     
     return fallbacks.slice(0, limit);
+  }
+
+  // Enhanced PDF Q&A using the enhanced PDF processor
+  async answerPDFQuestion(query: string): Promise<string> {
+    try {
+      console.log('📄 Answering PDF question with enhanced processing:', query);
+      
+      // Import the enhanced PDF processor dynamically to avoid circular dependency
+      const EnhancedPDFProcessor = await import('./enhanced-pdf-processor');
+      const enhancedPDFProcessor = EnhancedPDFProcessor.default.getInstance();
+      
+      // Use the enhanced PDF processor to answer questions about all PDFs
+      const answer = await enhancedPDFProcessor.answerQuestionAboutPDFs(query);
+      
+      console.log('✅ PDF question answered successfully');
+      return answer;
+    } catch (error) {
+      console.error('❌ Error answering PDF question:', error);
+      
+      // Fallback to regular database search
+      console.log('🔄 Falling back to regular database search...');
+      return await this.generateResponseWithDatabaseContext(query);
+    }
+  }
+
+  // Detect if a query is specifically about PDFs
+  private isPDFQuery(query: string): boolean {
+    const pdfKeywords = [
+      'pdf', 'document', 'file', 'paper', 'report', 'research',
+      'study', 'article', 'book', 'manual', 'guide', 'documentation'
+    ];
+    
+    const lowerQuery = query.toLowerCase();
+    return pdfKeywords.some(keyword => lowerQuery.includes(keyword));
+  }
+
+  /**
+   * Reply to a specific message - pulls ONLY from that message's content
+   */
+  async replyToSpecificMessage(messageId: string, userQuery: string): Promise<string> {
+    try {
+      console.log('📍 REPLY TO SPECIFIC: Replying to message', messageId, 'with query:', userQuery);
+      
+      // Get the specific message
+      const specificMessage = await this.chatService.getMessage(messageId);
+      
+      if (!specificMessage) {
+        return "I can't find that specific message to reply to. It might have been deleted.";
+      }
+      
+      console.log('📄 REPLY TO SPECIFIC: Found message:', {
+        id: specificMessage.id,
+        type: specificMessage.type,
+        title: specificMessage.extracted_title,
+        hasExtractedText: !!specificMessage.extracted_text,
+        contentLength: specificMessage.content.length
+      });
+      
+      // Create focused context ONLY from this specific message
+      let messageContent = '';
+      let contentType = '';
+      
+      if (specificMessage.extracted_text && specificMessage.extracted_text.length > 100) {
+        // Use extracted content for documents/PDFs/links
+        contentType = `${specificMessage.type.toUpperCase()} DOCUMENT`;
+        messageContent = `SPECIFIC ${contentType} CONTENT:\n`;
+        messageContent += `Title: ${specificMessage.extracted_title || 'Untitled'}\n`;
+        messageContent += `Filename: ${specificMessage.filename || 'N/A'}\n`;
+        messageContent += `Word Count: ${specificMessage.word_count || 'Unknown'}\n\n`;
+        messageContent += `FULL EXTRACTED TEXT:\n${specificMessage.extracted_text}\n`;
+        
+        console.log('📄 REPLY TO SPECIFIC: Using extracted text content');
+      } else if (specificMessage.type === 'image' && specificMessage.content.includes('Image shared -')) {
+        // Use image analysis content
+        contentType = 'IMAGE';
+        const imageAnalysis = specificMessage.content.replace('Image shared - ', '').replace('...', '');
+        messageContent = `SPECIFIC IMAGE CONTENT:\n`;
+        messageContent += `Filename: ${specificMessage.filename || 'Unknown'}\n`;
+        messageContent += `File URL: ${specificMessage.file_url || 'N/A'}\n\n`;
+        messageContent += `VISUAL ANALYSIS:\n${imageAnalysis}\n`;
+        
+        console.log('📄 REPLY TO SPECIFIC: Using image analysis content');
+      } else {
+        // Use basic message content
+        contentType = specificMessage.type.toUpperCase();
+        messageContent = `SPECIFIC ${contentType} CONTENT:\n`;
+        if (specificMessage.filename) messageContent += `Filename: ${specificMessage.filename}\n`;
+        if (specificMessage.file_url) messageContent += `URL: ${specificMessage.file_url}\n`;
+        messageContent += `Content: ${specificMessage.content}\n`;
+        
+        console.log('📄 REPLY TO SPECIFIC: Using basic content');
+      }
+      
+      // Generate response focused ONLY on this specific content
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill, responding to a user's question about a SPECIFIC piece of content they uploaded. 
+
+CRITICAL RULES:
+1. Answer ONLY based on the specific content provided below
+2. Do NOT reference any other documents, images, or content
+3. Do NOT pull from conversation history or other materials
+4. If the specific content doesn't contain the answer, say "That specific ${contentType.toLowerCase()} doesn't contain information about [topic]"
+5. Be conversational and helpful, but stay focused on ONLY this one piece of content
+6. Use phrases like "In this ${contentType.toLowerCase()}..." or "This specific document shows..."
+
+Keep it natural and helpful, but absolutely constrained to this one item.`
+          },
+          {
+            role: 'user',
+            content: `User's question: "${userQuery}"\n\n${messageContent}\n\nAnswer based ONLY on the content above. Do not reference anything else.`
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.3,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        return `I couldn't generate a response about that specific ${contentType.toLowerCase()}. Please try again.`;
+      }
+
+      console.log('✅ REPLY TO SPECIFIC: Generated focused response');
+      return response;
+      
+    } catch (error) {
+      console.error('❌ REPLY TO SPECIFIC: Error replying to specific message:', error);
+      return "I encountered an error while analyzing that specific content. Please try again.";
+    }
+  }
+
+  /**
+   * Enhanced method to get a specific message with all content
+   */
+  private async getSpecificMessageContent(messageId: string): Promise<ChatMessage | null> {
+    try {
+      const message = await this.chatService.getMessage(messageId);
+      return message;
+    } catch (error) {
+      console.error('❌ Error getting specific message:', error);
+      return null;
+    }
+  }
+
+  // Get recent conversation messages for context
+  private async getRecentConversationContext(limit: number = 5): Promise<any[]> {
+    try {
+      const messages = await this.chatService.getUserMessages(limit);
+      // Return most recent messages (reverse order since getUserMessages returns chronological)
+      return messages.slice(-limit).reverse();
+    } catch (error) {
+      console.error('❌ Error getting recent conversation context:', error);
+      return [];
+    }
+  }
+
+  // Handle follow-up responses (yes, no, etc.) - IMPROVED
+  private async handleFollowUpResponse(userMessage: string, isPositive: boolean): Promise<string> {
+    try {
+      const lastAction = this.conversationState.lastActionOffered;
+      const lastResponse = this.conversationState.lastAIResponse;
+      const conversationContext = this.conversationState.conversationContext;
+      
+      console.log('🔄 Handling follow-up response:', {
+        userMessage,
+        isPositive,
+        lastAction,
+        lastResponsePreview: lastResponse.substring(0, 100) + '...',
+        contextPreview: conversationContext.substring(0, 100) + '...'
+      });
+      
+      // Get recent conversation context for better responses
+      const recentMessages = await this.getRecentConversationContext(5);
+      
+      if (isPositive && lastAction) {
+        // User said yes to an action - execute it
+        console.log('✅ User agreed to action:', lastAction);
+        return await this.executeOfferedAction(lastAction);
+      } else {
+        // Generate contextual response using recent conversation
+        console.log('🎯 Generating contextual follow-up response');
+        return await this.generateContextualFollowUp(userMessage, recentMessages, isPositive);
+      }
+    } catch (error) {
+      console.error('❌ Error handling follow-up response:', error);
+      return "Sorry, I got confused. What would you like to know about your saved content?";
+    }
+  }
+
+  // Generate contextual follow-up response based on recent conversation
+  private async generateContextualFollowUp(userMessage: string, recentMessages: any[], isPositive: boolean): Promise<string> {
+    try {
+      // Build conversation context from recent messages
+      const conversationHistory = recentMessages.map(msg => {
+        if (msg.type === 'link' && msg.referencedContent) {
+          return `User shared: ${msg.referencedContent.title || 'Link'} - ${msg.referencedContent.description || 'No description'}`;
+        } else if (msg.type === 'image') {
+          return `User shared: Image`;
+        } else if (msg.type === 'file') {
+          return `User shared: ${msg.filename || 'File'}`;
+        } else {
+          return `${msg.isBot ? 'AI' : 'User'}: ${msg.content}`;
+        }
+      }).join('\n');
+
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a helpful AI assistant engaged in a conversation about content the user has shared. 
+
+Based on the conversation history, provide a relevant, contextual response to the user's follow-up message. 
+
+Guidelines:
+- Reference the content they've shared when relevant
+- Provide specific, helpful insights rather than generic responses
+- If they're asking for a summary, provide a concise 2-3 sentence overview
+- If they want details, focus on the most important points
+- Keep responses conversational and engaging
+- Don't repeat information you've already provided
+
+Recent conversation context:
+${conversationHistory}`
+          },
+          {
+            role: 'user',
+            content: `User's follow-up message: "${userMessage}"\n\nProvide a contextual, helpful response based on our conversation about the content they've shared.`
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content || "I'd be happy to help you with that. What specific aspect would you like to explore?";
+      
+      // Update conversation state
+      this.conversationState.followUpExpected = response.includes('?') || response.includes('Would you like') || response.includes('want to');
+      this.conversationState.lastActionOffered = '';
+      
+      return response;
+    } catch (error) {
+      console.error('❌ Error generating contextual follow-up:', error);
+      return "I'd be happy to help you explore that topic further. What specific aspect interests you most?";
+    }
+  }
+
+  // Handle positive response when no specific action was offered
+  private async handlePositiveResponseWithoutAction(userMessage: string): Promise<string> {
+    try {
+      // Try to continue based on the last conversation context
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `The user responded positively ("${userMessage}") to your previous response. Continue the conversation naturally by providing more information or asking what specific help they need.\n\nKeep it short and helpful. Don't repeat what you just said.`
+          },
+          {
+            role: 'user',
+            content: `My previous response: "${this.conversationState.lastAIResponse}"\n\nUser's positive response: "${userMessage}"\n\nContinue naturally.`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || "Great! What specific information are you looking for?";
+    } catch (error) {
+      console.error('❌ Error handling positive response without action:', error);
+      return "Great! What specific information are you looking for?";
+    }
+  }
+
+  // Handle conversation continuation for follow-ups without clear actions
+  private async handleConversationContinuation(userMessage: string): Promise<string> {
+    try {
+      console.log('🔄 Handling conversation continuation...');
+      
+      // Use the context from the last response to continue naturally
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill continuing a conversation. The user just responded with "${userMessage}" to your previous response: "${this.conversationState.lastAIResponse}".\n\nContinue the conversation naturally:\n- Don't repeat what you just said\n- Build on the previous context\n- Keep it short and conversational\n- If they seem to want more info, provide it\n- If they seem done with the topic, offer to help with something else`
+          },
+          {
+            role: 'user',
+            content: `Continue our conversation. My response: "${userMessage}"`
+          }
+        ],
+        max_tokens: 200,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || "What else would you like to know about your saved content?";
+    } catch (error) {
+      console.error('❌ Error in conversation continuation:', error);
+      return "What else would you like to know about your saved content?";
+    }
+  }
+
+  // Handle new queries with database search and better fallback
+  private async handleNewQueryWithFallback(userMessage: string): Promise<string> {
+    try {
+      // Check if the query requires real-time information
+      const requiresRealTimeInfo = this.detectRealTimeQuery(userMessage);
+      
+      let realTimeContext = '';
+      if (requiresRealTimeInfo) {
+        console.log('🔍 Query requires real-time information, using Perplexity...');
+        try {
+          const PerplexityService = await import('./perplexity');
+          const perplexityService = PerplexityService.default.getInstance();
+          
+          const searchResult = await perplexityService.searchTopic(userMessage);
+          realTimeContext = `\n\nREAL-TIME INFORMATION FROM PERPLEXITY:\n${searchResult.content}\n\nKey points: ${searchResult.keyPoints.join(', ')}`;
+          
+          console.log('✅ Real-time context added from Perplexity');
+        } catch (perplexityError) {
+          console.error('❌ Perplexity search failed:', perplexityError);
+          realTimeContext = '\n\nNote: Real-time information search failed, using stored content only.';
+        }
+      }
+      
+      // Build comprehensive database context
+      const dbContext = await this.buildDatabaseContext(userMessage);
+      
+      // CRITICAL: Check if we have relevant content before proceeding
+      if (dbContext.relevantContent.length === 0 && !requiresRealTimeInfo) {
+        console.log('⚠️ No relevant content found - providing helpful LLM response');
+        return await this.generateHelpfulLLMResponse(userMessage);
+      }
+      
+      // Format context for AI
+      const contextPrompt = this.formatDatabaseContextForAI(dbContext, userMessage) + realTimeContext;
+      
+      // Generate response using full context
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill, a chill personal assistant. Talk like a helpful friend, not a formal AI.\n\nKeep responses SHORT and natural:\n- 1-2 sentences max unless they ask for details\n- Use casual language like "I see you saved..." or "Looks like..."\n- No formal phrases or AI-speak\n- If you don't find relevant saved content, be a helpful LLM and answer the question directly\n\nINTENT-BASED PERSONALIZATION:\n- Pay attention to USER'S INTENT/NOTE fields - these show WHY they saved content\n- Tailor your follow-ups based on their stated purpose:\n  * "work project" → suggest organization, key points, or presentation help\n  * "weekend reading" → suggest similar content or related topics\n  * "research" → offer deeper analysis or connections to other content\n  * "reference" → suggest ways to categorize or retrieve later\n- If no intent given, use tags and content type to infer purpose\n\nFOLLOW-UP GUIDELINES:\n- Instead of generic "want to dive deeper?" make follow-ups SPECIFIC to:\n  1. What you just discussed\n  2. Their stated intent/purpose for the content\n- Examples: "Want me to extract key points for your work presentation?" or "Should I find similar weekend reading materials?"\n- Base follow-ups on actual content AND user intent\n\nCONVERSATION CONTINUITY:\n- Remember what you just told them when they respond positively\n- Build on the previous response, don't start over\n- If they say "yes", "sure", "please do" - take the specific action you offered\n\nNO SAVED CONTENT HANDLING:\n- If no relevant saved content is found, answer the question using your knowledge as an LLM\n- Don't say "I don't have that in your saved content" - just answer helpfully\n- Be a smart assistant who can help even when database is empty\n\nThink: texting a friend who knows your goals and remembers the conversation flow.`
+          },
+          {
+            role: 'user',
+            content: contextPrompt
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        throw new Error('No response generated');
+      }
+
+      return response;
+    } catch (error) {
+      console.error('❌ Error handling new query:', error);
+      return await this.generateHelpfulLLMResponse(userMessage);
+    }
+  }
+
+  // Generate helpful LLM response when no database content is found
+  private async generateHelpfulLLMResponse(userMessage: string): Promise<string> {
+    try {
+      console.log('🧠 Generating helpful LLM response for:', userMessage);
+      
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill, a helpful AI assistant. The user asked a question but doesn't have relevant saved content for it.\n\nProvide a concise but thorough response (2-4 sentences) based on your knowledge, but be conservative and accurate.\n\nGuidelines:\n- Keep responses concise but helpful\n- Be helpful but don't overstate or guess\n- If you're not confident about something, say so\n- Suggest they save related content for future reference\n- Don't mention "saved content" or "database" - just answer naturally`
+          },
+          {
+            role: 'user',
+            content: userMessage
+          }
+        ],
+        max_tokens: 250,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || "I'm not sure about that one. Want to save some content about it so I can help better next time?";
+    } catch (error) {
+      console.error('❌ Error generating helpful LLM response:', error);
+      return "I'm not sure about that one. Want to save some content about it so I can help better next time?";
+    }
+  }
+
+  // Improved fallback response
+  private async generateFallbackResponse(userMessage: string): Promise<string> {
+    try {
+      return await this.generateResponse(userMessage);
+    } catch (error) {
+      console.error('❌ All response methods failed:', error);
+      return "I'm having some trouble right now. Could you try asking me something else?";
+    }
+  }
+
+  // Handle new queries with database search
+  private async handleNewQuery(userMessage: string): Promise<string> {
+    try {
+      // Check if the query requires real-time information
+      const requiresRealTimeInfo = this.detectRealTimeQuery(userMessage);
+      
+      let realTimeContext = '';
+      if (requiresRealTimeInfo) {
+        console.log('🔍 Query requires real-time information, using Perplexity...');
+        try {
+          const PerplexityService = await import('./perplexity');
+          const perplexityService = PerplexityService.default.getInstance();
+          
+          const searchResult = await perplexityService.searchTopic(userMessage);
+          realTimeContext = `\n\nREAL-TIME INFORMATION FROM PERPLEXITY:\n${searchResult.content}\n\nKey points: ${searchResult.keyPoints.join(', ')}`;
+          
+          console.log('✅ Real-time context added from Perplexity');
+        } catch (perplexityError) {
+          console.error('❌ Perplexity search failed:', perplexityError);
+          realTimeContext = '\n\nNote: Real-time information search failed, using stored content only.';
+        }
+      }
+      
+      // Build comprehensive database context
+      const dbContext = await this.buildDatabaseContext(userMessage);
+      
+      // Format context for AI
+      const contextPrompt = this.formatDatabaseContextForAI(dbContext, userMessage) + realTimeContext;
+      
+      // Generate response using full context
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill, a helpful AI assistant. Answer questions based ONLY on the provided content. 
+
+CRITICAL RULES:
+- ONLY use information from the provided documents/content
+- If the answer isn't in the provided content, say "I don't have that specific information in your saved content"
+- NEVER make up or guess information
+- NEVER mention external knowledge or sources not provided
+
+RESPONSE STYLE:
+- Keep responses concise but thorough (2-4 sentences)
+- Use casual, friendly tone
+- Reference specific details from the provided content
+- If you reference content, mention what you're looking at (e.g., "Looking at your saved article about...")
+- When asked for summaries, provide 2-3 key points, not the full content
+- Focus on the most important insights rather than repeating everything
+
+EXAMPLES:
+- "Based on your saved article, the main point is... The document also mentions... This suggests that..."
+- "From your document, I can see that... This is important because..."
+- "I don't have that specific information in your saved content"
+
+Remember: Only use what's provided, be concise but helpful, and stay relevant.`
+          },
+          {
+            role: 'user',
+            content: contextPrompt
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      if (!response) {
+        throw new Error('No response generated');
+      }
+
+      return response;
+    } catch (error) {
+      console.error('❌ Error handling new query:', error);
+      return "I'm having trouble accessing your saved content right now. Try asking me something specific about what you've saved.";
+    }
+  }
+
+  // Execute the action that was offered to the user
+  private async executeOfferedAction(action: string): Promise<string> {
+    try {
+      console.log('🚀 Executing offered action:', action);
+      
+      // Parse the action and execute accordingly - be more specific about actions
+      if (action.includes('suggest') && (action.includes('websites') || action.includes('blogs') || action.includes('resources'))) {
+        return await this.provideSpecificSuggestions(action);
+      } else if (action.includes('recommend') && (action.includes('websites') || action.includes('resources'))) {
+        return await this.provideSpecificSuggestions(action);
+      } else if (action.includes('find similar') || action.includes('similar articles')) {
+        return await this.findSimilarContent();
+      } else if (action.includes('check other') || action.includes('other PDFs')) {
+        return await this.findRelatedDocuments();
+      } else if (action.includes('more details') || action.includes('elaborate')) {
+        return await this.provideMoreDetails();
+      } else if (action.includes('similar articles') || action.includes('similar content') || action.includes('similar photography') || action.includes('similar images')) {
+        return await this.findSimilarContent();
+      } else if (action.includes('more details') || action.includes('elaborate') || action.includes('details about')) {
+        return await this.provideMoreDetails();
+      } else if (action.includes('find') || action.includes('search') || action.includes('look for')) {
+        return await this.executeSearchAction(action);
+      } else {
+        // For any other specific action, try to fulfill it directly
+        return await this.executeSpecificAction(action);
+      }
+    } catch (error) {
+      console.error('❌ Error executing action:', error);
+      return "Sorry, I couldn't complete that action. What else would you like to know about your saved content?";
+    }
+  }
+
+  // Provide specific suggestions when the AI offered to suggest resources/websites
+  private async provideSpecificSuggestions(action: string): Promise<string> {
+    try {
+      console.log('💡 Providing specific suggestions for action:', action);
+      
+      // Use the conversation context to determine what suggestions to provide
+      const lastQuery = this.conversationState.lastUserQuery.toLowerCase();
+      const lastResponse = this.conversationState.lastAIResponse.toLowerCase();
+      
+      // Generate relevant suggestions based on the context
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill. The user asked about "${this.conversationState.lastUserQuery}" and you offered to suggest resources. Now they said yes, so provide the specific suggestions you offered. Be helpful and specific - give actual website names, blogs, or resources related to their topic.
+
+Keep it conversational and helpful. Don't mention "saved content" - just provide the suggestions you promised.`
+          },
+          {
+            role: 'user',
+            content: `User asked: "${this.conversationState.lastUserQuery}"
+Your previous response: "${this.conversationState.lastAIResponse}"
+Action you offered: "${action}"
+
+Now provide the specific suggestions you offered.`
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || "Here are some great resources I'd recommend checking out!";
+      
+    } catch (error) {
+      console.error('❌ Error providing specific suggestions:', error);
+      return "I'd be happy to help you find those resources! What specific topic are you most interested in?";
+    }
+  }
+
+  // Execute search-related actions
+  private async executeSearchAction(action: string): Promise<string> {
+    try {
+      console.log('🔍 Executing search action:', action);
+      
+      // Try to search based on the last user query and the specific action
+      const searchQuery = this.conversationState.lastUserQuery;
+      const dbContext = await this.buildDatabaseContext(searchQuery);
+      
+      if (dbContext.relevantContent.length > 0) {
+        const item = dbContext.relevantContent[0];
+        const itemName = item.extracted_title || item.filename || 'content';
+        return `I found this in your saved content: ${itemName}. ${item.content.substring(0, 150)}...`;
+      } else {
+        return `I don't have any saved content about "${searchQuery}" yet. Want to save some articles or documents about this topic?`;
+      }
+    } catch (error) {
+      console.error('❌ Error in search action:', error);
+      return "I couldn't search your content right now. What else can I help you with?";
+    }
+  }
+
+  // Execute any other specific action the AI offered
+  private async executeSpecificAction(action: string): Promise<string> {
+    try {
+      console.log('⚡ Executing specific action:', action);
+      
+      // Use AI to understand and execute the specific action based on context
+      const completion = await this.openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You're Bill. You previously offered to do something specific: "${action}". The user said yes, so now do exactly what you offered. Be specific and helpful.
+
+If you offered to provide information, provide it.
+If you offered to suggest something, suggest it.
+If you offered to find something, try to find it.
+
+Don't fall back to generic responses - fulfill the specific action you offered.`
+          },
+          {
+            role: 'user',
+            content: `Please execute this action you offered: "${action}"
+
+Context - User asked: "${this.conversationState.lastUserQuery}"
+Your previous response: "${this.conversationState.lastAIResponse}"`
+          }
+        ],
+        max_tokens: 300,
+        temperature: 0.7,
+      });
+
+      const response = completion.choices[0]?.message?.content;
+      return response || `I'll help you with ${action}. Let me know if you need anything else!`;
+      
+    } catch (error) {
+      console.error('❌ Error executing specific action:', error);
+      return "I'll help you with that. What specific information are you looking for?";
+    }
+  }
+
+  // Handle negative responses
+  private async handleNegativeResponse(userMessage: string): Promise<string> {
+    return "No problem! What else would you like to know about your saved content?";
+  }
+
+  // Detect if the AI response includes a follow-up question
+  private detectFollowUpInResponse(response: string): boolean {
+    const followUpPatterns = [
+      /want me to/i,
+      /should i/i,
+      /would you like me to/i,
+      /can i/i,
+      /\?$/
+    ];
+    
+    return followUpPatterns.some(pattern => pattern.test(response));
+  }
+
+  // Find similar content based on the last query
+  private async findSimilarContent(): Promise<string> {
+    try {
+      const lastQuery = this.conversationState.lastUserQuery;
+      const dbContext = await this.buildDatabaseContext(lastQuery);
+      
+      if (dbContext.relevantContent.length > 1) {
+        const similarItems = dbContext.relevantContent.slice(1, 3);
+        const itemNames = similarItems.map(item => {
+          if (item.type === 'link') {
+            return item.content || 'link';
+          } else if (item.type === 'file') {
+            return item.filename || 'document';
+          } else if (item.type === 'image') {
+            return 'image';
+          } else {
+            return item.content || 'item';
+          }
+        }).join(', ');
+        
+        return `I found some similar content in your saved items: ${itemNames}. Would you like me to show you more details about any of these?`;
+      } else {
+        return "I don't have any similar content in your saved items right now. Would you like me to search for more information about this topic?";
+      }
+    } catch (error) {
+      return "I couldn't find similar content. What else would you like to know?";
+    }
+  }
+
+  // Find related documents
+  private async findRelatedDocuments(): Promise<string> {
+    try {
+      const allMessages = await this.chatService.getUserMessages(50);
+      const documents = allMessages.filter(msg => msg.type === 'file');
+      
+      if (documents.length > 0) {
+        const docNames = documents.slice(0, 3).map(doc => doc.filename || 'document').join(', ');
+        return `I found these documents: ${docNames}. Want me to check any of them for related content?`;
+      } else {
+        return "I don't see any documents in your saved items. Have you uploaded any files yet?";
+      }
+    } catch (error) {
+      return "I couldn't access your documents right now. What else can I help you with?";
+    }
+  }
+
+  // Provide more details about the last response
+  private async provideMoreDetails(): Promise<string> {
+    try {
+      const lastQuery = this.conversationState.lastUserQuery;
+      const dbContext = await this.buildDatabaseContext(lastQuery);
+      
+      if (dbContext.relevantContent.length > 0) {
+        const item = dbContext.relevantContent[0];
+        if (item.extracted_text && item.extracted_text.length > 100) {
+          const details = item.extracted_text.substring(0, 200) + '...';
+          return `Here are more details: ${details}`;
+        } else {
+          return "I don't have more detailed information about that item. Is there something specific you'd like to know?";
+        }
+      } else {
+        return "I don't have more details about that. What else would you like to know?";
+      }
+    } catch (error) {
+      return "I couldn't get more details right now. What else can I help you with?";
+    }
+  }
+
+  // Execute a generic action
+  private async executeGenericAction(action: string): Promise<string> {
+    return `I'll help you ${action}. Let me check your saved content for that information...`;
+  }
+
+  // Reset conversation state (useful for new conversations)
+  public resetConversationState(): void {
+    this.conversationState = {
+      lastAIResponse: '',
+      lastUserQuery: '',
+      conversationContext: '',
+      followUpExpected: false,
+      lastActionOffered: ''
+    };
+    console.log('🔄 Conversation state reset');
+  }
+
+  // Get current conversation state for debugging
+  public getConversationState(): ConversationState {
+    return { ...this.conversationState };
   }
 }
 

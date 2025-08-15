@@ -4,10 +4,10 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    plan: starter
+    plan: standard
     env: python3
     buildCommand: echo "Using Docker build from root"
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 docling_service:app
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --max-requests 100 --max-requests-jitter 10 docling_service:app
     envVars:
       - key: PORT
         value: 8080

@@ -15,7 +15,7 @@ const redirectUri = AuthSession.makeRedirectUri();
 
 console.log('Redirect URI:', redirectUri); // Debug log
 
-export interface GoogleUser {
+export interface GoogleUrser {
   id: string;
   email: string;
   name: string;

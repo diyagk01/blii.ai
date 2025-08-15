@@ -124,6 +124,8 @@ class WebScraperService {
     }
   }
 
+
+
   /**
    * Fetch HTML content from URL
    */
@@ -449,6 +451,7 @@ class WebScraperService {
       '&gt;': '>',
       '&quot;': '"',
       '&#39;': "'",
+      '&#039;': "'",  // Added missing apostrophe entity
       '&apos;': "'",
       '&nbsp;': ' ',
       '&mdash;': '—',
@@ -459,7 +462,10 @@ class WebScraperService {
       '&ldquo;': '"',
       '&rdquo;': '"',
       '&lsquo;': "'",
-      '&rsquo;': "'"
+      '&rsquo;': "'",
+      '&copy;': '©',
+      '&reg;': '®',
+      '&trade;': '™'
     };
 
     let decoded = text;

@@ -11,11 +11,13 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View
 } from 'react-native';
+import EdgeCaseMessageComponent from '../components/EdgeCaseMessage';
 import ChatService from '../services/chat';
+import EdgeCaseMessagingService, { EdgeCaseAction } from '../services/edge-case-messaging';
+import { cleanDisplayTitle } from '../services/html-utils';
 import OpenAIService from '../services/openai';
 import SupabaseAuthService from '../services/supabase-auth';
 import Sidebar from './Sidebar';
@@ -31,6 +33,9 @@ interface RecentUpload {
   file_url?: string;
   created_at: string;
   tags?: string[];
+  originalMessage?: any;
+  hasEdgeCase?: boolean;
+  edgeCase?: any;
 }
 
 const HomeScreen = () => {
@@ -38,6 +43,7 @@ const HomeScreen = () => {
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [user, setUser] = useState<any>(null);
   const sidebarAnim = useRef(new Animated.Value(-280)).current;
+  const edgeCaseService = EdgeCaseMessagingService.getInstance();
 
   useEffect(() => {
     if (!user) {
@@ -134,39 +140,55 @@ const HomeScreen = () => {
               imageUrl = msg.file_url!;
               title = msg.filename || msg.content;
             } else if (msg.type === 'file') {
-              imageUrl = getFileTypeImage(msg.filename);
+              // Check if it's a PDF with a preview image
+              if (msg.filename && msg.filename.toLowerCase().endsWith('.pdf') && (msg as any).preview_image) {
+                imageUrl = (msg as any).preview_image;
+              } else {
+                imageUrl = getFileTypeImage(msg.filename);
+              }
               title = msg.filename || msg.content;
             } else if (msg.type === 'link') {
-              // For links, try to get the actual preview image from the LinkPreviewService
-              try {
-                const LinkPreviewService = await import('../services/link-preview');
-                const linkPreviewService = LinkPreviewService.default.getInstance();
-                const previewData = await linkPreviewService.generatePreview(msg.file_url || '');
-                
-                imageUrl = previewData.image;
-                title = previewData.title;
-                
-                console.log('✅ Generated link preview for homepage:', {
-                  url: msg.file_url,
-                  title: previewData.title,
-                  hasImage: !!previewData.image
-                });
-              } catch (error) {
-                console.error('❌ Failed to generate link preview for homepage:', error);
-                // Fallback to basic preview
-                imageUrl = getLinkPreviewImage(msg.file_url || '');
-                title = msg.content;
+              // For links, prioritize stored extracted data, fallback to generating preview
+              if (msg.extracted_title) {
+                // Use stored extracted title (will be cleaned by cleanDisplayTitle)
+                title = msg.extracted_title;
+                // Use stored preview image if available
+                imageUrl = (msg as any).preview_image || getLinkPreviewImage(msg.file_url || '');
+              } else {
+                // Fallback: generate new preview for links without extracted data
+                try {
+                  const LinkPreviewService = await import('../services/link-preview');
+                  const linkPreviewService = LinkPreviewService.default.getInstance();
+                  const previewData = await linkPreviewService.generatePreview(msg.file_url || '');
+                  
+                  imageUrl = previewData.image;
+                  title = previewData.title;
+                  
+                  console.log('✅ Generated link preview for homepage:', {
+                    url: msg.file_url,
+                    title: previewData.title,
+                    hasImage: !!previewData.image
+                  });
+                } catch (error) {
+                  console.error('❌ Failed to generate link preview for homepage:', error);
+                  // Final fallback
+                  imageUrl = getLinkPreviewImage(msg.file_url || '');
+                  title = msg.content;
+                }
               }
             }
 
             return {
               id: msg.id,
-              title: title,
+              title: cleanDisplayTitle(title),
               type: msg.type as 'image' | 'file' | 'link',
               image: imageUrl,
               file_url: msg.file_url,
               created_at: msg.created_at,
-              tags: msg.tags
+              tags: msg.tags,
+              originalMessage: msg,
+              hasEdgeCase: edgeCaseService.hasEdgeCase(msg),
+              edgeCase: edgeCaseService.detectEdgeCase(msg) ? edgeCaseService.getEdgeCaseMessage(edgeCaseService.detectEdgeCase(msg)!) : null
             };
           })
       );
@@ -221,24 +243,9 @@ const HomeScreen = () => {
   const getLinkPreviewImage = (url: string) => {
     try {
       const domain = new URL(url).hostname.replace('www.', '');
-      
-      if (domain.includes('youtube.com') || domain.includes('youtu.be')) {
-        return 'https://via.placeholder.com/150x100/FF0000/white?text=▶+YouTube';
-      } else if (domain.includes('github.com')) {
-        return 'https://via.placeholder.com/150x100/24292e/white?text=📁+GitHub';
-      } else if (domain.includes('medium.com')) {
-        return 'https://via.placeholder.com/150x100/00ab6c/white?text=📰+Medium';
-      } else if (domain.includes('techcrunch.com')) {
-        return 'https://via.placeholder.com/150x100/0f9d58/white?text=🚀+Tech';
-      } else if (domain.includes('twitter.com') || domain.includes('x.com')) {
-        return 'https://via.placeholder.com/150x100/1da1f2/white?text=🐦+X';
-      } else if (domain.includes('linkedin.com')) {
-        return 'https://via.placeholder.com/150x100/0077b5/white?text=💼+LinkedIn';
-      } else {
-        return 'https://via.placeholder.com/150x100/4285f4/white?text=🔗+Link';
-      }
+      return `https://via.placeholder.com/150x100/808080/white?text=🔗+${encodeURIComponent(domain.substring(0, 10))}`;
     } catch {
-      return 'https://via.placeholder.com/150x100/4285f4/white?text=🔗+Link';
+      return 'https://via.placeholder.com/150x100/808080/white?text=��+Link';
     }
   };
 
@@ -287,6 +294,73 @@ const HomeScreen = () => {
     });
   };
 
+  const handleEdgeCaseAction = (action: EdgeCaseAction, messageId: string) => {
+    console.log('🎯 Edge case action triggered in home:', action.type, 'for message:', messageId);
+    
+    switch (action.type) {
+      case 'note':
+        router.push({
+          pathname: '/chat',
+          params: { 
+            initialMessage: `Add note to this item`,
+            focusedMessageId: messageId
+          }
+        });
+        break;
+        
+      case 'tag':
+        router.push({
+          pathname: '/chat',
+          params: { 
+            initialMessage: `Tag this item`,
+            focusedMessageId: messageId
+          }
+        });
+        break;
+        
+      case 'reminder':
+        router.push({
+          pathname: '/chat',
+          params: { 
+            initialMessage: `Remind me about this`,
+            focusedMessageId: messageId
+          }
+        });
+        break;
+        
+      case 'open':
+      case 'view':
+        // Find the upload and navigate to media preview
+        const upload = recentUploads.find(u => u.id === messageId);
+        if (upload) {
+          const queryParams = new URLSearchParams({
+            type: upload.type || 'unknown',
+            title: upload.title || '',
+            content: '',
+            url: upload.file_url || '',
+            imageUrl: upload.image || '',
+            summary: '',
+            id: upload.id || '',
+          }).toString();
+          router.push(`/media-preview?${queryParams}`);
+        }
+        break;
+        
+      case 'organize':
+        router.push({
+          pathname: '/chat',
+          params: { 
+            initialMessage: `Organize this item`,
+            focusedMessageId: messageId
+          }
+        });
+        break;
+        
+      default:
+        console.log('Unknown action type:', action.type);
+    }
+  };
+
   const handleTopicPress = (topic: string) => {
     if (selectedTopic === topic) {
       setSelectedTopic(null); // Toggle off if already selected
@@ -297,8 +371,25 @@ const HomeScreen = () => {
 
   const handleSavePress = (save: RecentUpload) => {
     console.log('Save pressed:', save.title);
-    // Navigate to chat tab
-    router.replace('/chat');
+    // Navigate to media preview with the save data
+    const queryParams = new URLSearchParams({
+      type: save.type || 'unknown',
+      title: save.title || '',
+      content: '', // Could be populated from save data if available
+      url: save.file_url || '',
+      imageUrl: save.image || '',
+      summary: '', // Could be populated from save data if available
+      id: save.id || '',
+    }).toString();
+    
+    router.push(`/media-preview?${queryParams}`);
+  };
+
+  const handleMediaTypePress = (mediaType: string) => {
+    console.log('Media type pressed:', mediaType);
+    console.log('Navigating to all-saves with filter:', mediaType);
+    // Navigate to All Saves with the media type filter
+    router.push(`/(tabs)/all-saves?filter=${mediaType}`);
   };
 
   // Function to get relevant emoji for a tag
@@ -306,58 +397,106 @@ const HomeScreen = () => {
     const lowerTag = tag.toLowerCase();
     
     // Health & Wellness
-    if (lowerTag.includes('health') || lowerTag.includes('fitness') || lowerTag.includes('wellness') || lowerTag.includes('medical')) return '🏥';
+    if (lowerTag.includes('health') || lowerTag.includes('medical') || lowerTag.includes('doctor')) return '🏥';
+    if (lowerTag.includes('fitness') || lowerTag.includes('workout') || lowerTag.includes('gym') || lowerTag.includes('exercise')) return '💪';
+    if (lowerTag.includes('wellness') || lowerTag.includes('mental health') || lowerTag.includes('therapy')) return '🧘';
     if (lowerTag.includes('food') || lowerTag.includes('recipe') || lowerTag.includes('cooking') || lowerTag.includes('nutrition')) return '🍽️';
-    if (lowerTag.includes('exercise') || lowerTag.includes('workout') || lowerTag.includes('gym')) return '💪';
+    if (lowerTag.includes('diet') || lowerTag.includes('weight') || lowerTag.includes('calories')) return '🥗';
+    if (lowerTag.includes('sleep') || lowerTag.includes('rest') || lowerTag.includes('bed')) return '😴';
     
     // Work & Business
     if (lowerTag.includes('work') || lowerTag.includes('job') || lowerTag.includes('career') || lowerTag.includes('business')) return '💼';
     if (lowerTag.includes('meeting') || lowerTag.includes('conference') || lowerTag.includes('presentation')) return '📊';
     if (lowerTag.includes('finance') || lowerTag.includes('money') || lowerTag.includes('budget') || lowerTag.includes('investment')) return '💰';
+    if (lowerTag.includes('salary') || lowerTag.includes('income') || lowerTag.includes('pay')) return '💵';
+    if (lowerTag.includes('project') || lowerTag.includes('task') || lowerTag.includes('deadline')) return '📋';
+    if (lowerTag.includes('team') || lowerTag.includes('colleague') || lowerTag.includes('office')) return '👥';
     
     // Technology
     if (lowerTag.includes('tech') || lowerTag.includes('software') || lowerTag.includes('code') || lowerTag.includes('programming')) return '💻';
     if (lowerTag.includes('ai') || lowerTag.includes('artificial intelligence') || lowerTag.includes('machine learning')) return '🤖';
     if (lowerTag.includes('app') || lowerTag.includes('mobile') || lowerTag.includes('ios') || lowerTag.includes('android')) return '📱';
+    if (lowerTag.includes('web') || lowerTag.includes('website') || lowerTag.includes('internet')) return '🌐';
+    if (lowerTag.includes('data') || lowerTag.includes('analytics') || lowerTag.includes('stats')) return '📈';
+    if (lowerTag.includes('cybersecurity') || lowerTag.includes('security') || lowerTag.includes('hack')) return '🔒';
     
     // Education & Learning
     if (lowerTag.includes('education') || lowerTag.includes('learning') || lowerTag.includes('study') || lowerTag.includes('course')) return '📚';
     if (lowerTag.includes('research') || lowerTag.includes('science') || lowerTag.includes('academic')) return '🔬';
     if (lowerTag.includes('book') || lowerTag.includes('reading') || lowerTag.includes('article')) return '📖';
+    if (lowerTag.includes('university') || lowerTag.includes('college') || lowerTag.includes('school')) return '🎓';
+    if (lowerTag.includes('tutorial') || lowerTag.includes('guide') || lowerTag.includes('how-to')) return '📝';
+    if (lowerTag.includes('language') || lowerTag.includes('vocabulary') || lowerTag.includes('grammar')) return '🗣️';
     
     // Travel & Places
     if (lowerTag.includes('travel') || lowerTag.includes('trip') || lowerTag.includes('vacation') || lowerTag.includes('holiday')) return '✈️';
     if (lowerTag.includes('hotel') || lowerTag.includes('accommodation') || lowerTag.includes('booking')) return '🏨';
     if (lowerTag.includes('restaurant') || lowerTag.includes('cafe') || lowerTag.includes('dining')) return '🍴';
+    if (lowerTag.includes('beach') || lowerTag.includes('ocean') || lowerTag.includes('sea')) return '🏖️';
+    if (lowerTag.includes('mountain') || lowerTag.includes('hiking') || lowerTag.includes('climbing')) return '⛰️';
+    if (lowerTag.includes('city') || lowerTag.includes('urban') || lowerTag.includes('downtown')) return '🏙️';
     
     // Entertainment & Media
     if (lowerTag.includes('movie') || lowerTag.includes('film') || lowerTag.includes('cinema')) return '🎬';
     if (lowerTag.includes('music') || lowerTag.includes('song') || lowerTag.includes('album') || lowerTag.includes('concert')) return '🎵';
     if (lowerTag.includes('game') || lowerTag.includes('gaming') || lowerTag.includes('video game')) return '🎮';
     if (lowerTag.includes('art') || lowerTag.includes('design') || lowerTag.includes('creative')) return '🎨';
+    if (lowerTag.includes('podcast') || lowerTag.includes('audio') || lowerTag.includes('radio')) return '🎧';
+    if (lowerTag.includes('tv') || lowerTag.includes('television') || lowerTag.includes('show')) return '📺';
+    if (lowerTag.includes('comedy') || lowerTag.includes('funny') || lowerTag.includes('humor')) return '😄';
     
     // Shopping & Products
     if (lowerTag.includes('shopping') || lowerTag.includes('buy') || lowerTag.includes('purchase') || lowerTag.includes('product')) return '🛒';
     if (lowerTag.includes('fashion') || lowerTag.includes('clothing') || lowerTag.includes('style')) return '👗';
     if (lowerTag.includes('home') || lowerTag.includes('house') || lowerTag.includes('furniture') || lowerTag.includes('decor')) return '🏠';
+    if (lowerTag.includes('gift') || lowerTag.includes('present') || lowerTag.includes('birthday')) return '🎁';
+    if (lowerTag.includes('sale') || lowerTag.includes('discount') || lowerTag.includes('deal')) return '🏷️';
+    if (lowerTag.includes('amazon') || lowerTag.includes('ebay') || lowerTag.includes('online')) return '📦';
     
     // Personal & Lifestyle
     if (lowerTag.includes('personal') || lowerTag.includes('life') || lowerTag.includes('lifestyle')) return '🌟';
     if (lowerTag.includes('hobby') || lowerTag.includes('interest') || lowerTag.includes('passion')) return '🎯';
     if (lowerTag.includes('family') || lowerTag.includes('kids') || lowerTag.includes('children')) return '👨‍👩‍👧‍👦';
+    if (lowerTag.includes('relationship') || lowerTag.includes('dating') || lowerTag.includes('love')) return '💕';
+    if (lowerTag.includes('goal') || lowerTag.includes('target') || lowerTag.includes('achievement')) return '🎯';
+    if (lowerTag.includes('motivation') || lowerTag.includes('inspiration') || lowerTag.includes('success')) return '💪';
     
     // Nature & Environment
     if (lowerTag.includes('nature') || lowerTag.includes('environment') || lowerTag.includes('outdoor')) return '🌿';
     if (lowerTag.includes('weather') || lowerTag.includes('climate')) return '🌤️';
     if (lowerTag.includes('animal') || lowerTag.includes('pet') || lowerTag.includes('wildlife')) return '🐾';
+    if (lowerTag.includes('plant') || lowerTag.includes('garden') || lowerTag.includes('flower')) return '🌸';
+    if (lowerTag.includes('ocean') || lowerTag.includes('sea') || lowerTag.includes('water')) return '🌊';
+    if (lowerTag.includes('forest') || lowerTag.includes('tree') || lowerTag.includes('wood')) return '🌲';
     
     // Sports & Activities
     if (lowerTag.includes('sport') || lowerTag.includes('football') || lowerTag.includes('basketball') || lowerTag.includes('soccer')) return '⚽';
     if (lowerTag.includes('running') || lowerTag.includes('marathon') || lowerTag.includes('jogging')) return '🏃';
+    if (lowerTag.includes('yoga') || lowerTag.includes('meditation') || lowerTag.includes('mindfulness')) return '🧘';
+    if (lowerTag.includes('swimming') || lowerTag.includes('pool') || lowerTag.includes('water')) return '🏊';
+    if (lowerTag.includes('cycling') || lowerTag.includes('bike') || lowerTag.includes('bicycle')) return '🚴';
+    if (lowerTag.includes('tennis') || lowerTag.includes('golf') || lowerTag.includes('baseball')) return '🎾';
     
     // News & Information
     if (lowerTag.includes('news') || lowerTag.includes('current events') || lowerTag.includes('politics')) return '📰';
     if (lowerTag.includes('important') || lowerTag.includes('urgent') || lowerTag.includes('priority')) return '⚡';
+    if (lowerTag.includes('update') || lowerTag.includes('latest') || lowerTag.includes('trending')) return '📢';
+    if (lowerTag.includes('breaking') || lowerTag.includes('alert') || lowerTag.includes('emergency')) return '🚨';
+    
+    // Finance & Money
+    if (lowerTag.includes('stock') || lowerTag.includes('market') || lowerTag.includes('trading')) return '📈';
+    if (lowerTag.includes('crypto') || lowerTag.includes('bitcoin') || lowerTag.includes('blockchain')) return '₿';
+    if (lowerTag.includes('saving') || lowerTag.includes('budget') || lowerTag.includes('expense')) return '💳';
+    
+    // Social Media & Communication
+    if (lowerTag.includes('social') || lowerTag.includes('media') || lowerTag.includes('network')) return '📱';
+    if (lowerTag.includes('email') || lowerTag.includes('mail') || lowerTag.includes('inbox')) return '📧';
+    if (lowerTag.includes('message') || lowerTag.includes('chat') || lowerTag.includes('text')) return '💬';
+    
+    // Time & Organization
+    if (lowerTag.includes('schedule') || lowerTag.includes('calendar') || lowerTag.includes('appointment')) return '📅';
+    if (lowerTag.includes('reminder') || lowerTag.includes('alarm') || lowerTag.includes('notification')) return '⏰';
+    if (lowerTag.includes('todo') || lowerTag.includes('task') || lowerTag.includes('checklist')) return '✅';
     
     // Default fallback
     return '🏷️';
@@ -383,6 +522,24 @@ const HomeScreen = () => {
 
   // Collect all unique tags from recentUploads for By Topic
   const allTags = Array.from(new Set(recentUploads.flatMap(u => u.tags || [])));
+  
+  // Calculate tag frequency to determine most used topic
+  const tagFrequency: { [key: string]: number } = {};
+  recentUploads.forEach(upload => {
+    if (upload.tags) {
+      upload.tags.forEach(tag => {
+        tagFrequency[tag] = (tagFrequency[tag] || 0) + 1;
+      });
+    }
+  });
+  
+  // Find the most used tag
+  const mostUsedTag = Object.keys(tagFrequency).length > 0 
+    ? Object.keys(tagFrequency).reduce((a, b) => tagFrequency[a] > tagFrequency[b] ? a : b)
+    : null;
+  
+  // No default topic selection - users should see all sources first
+  
   // Map tags to topic objects with relevant emojis and colors
   const tagTopics = allTags.map(tag => ({
     name: tag, // Use exact tag name as entered by user
@@ -425,13 +582,8 @@ const HomeScreen = () => {
                 userName={user?.name || 'User'}
                 userEmail={user?.email || ''}
                 userAvatarUrl={user?.picture || 'https://ui-avatars.com/api/?name=User'}
+                onMenuItemPress={() => setDrawerVisible(false)}
               />
-              <TouchableOpacity
-                style={{ position: 'absolute', top: 18, right: 12, zIndex: 10, padding: 8 }}
-                onPress={() => setDrawerVisible(false)}
-              >
-                <Ionicons name="close" size={24} color="#222" />
-              </TouchableOpacity>
             </Animated.View>
             <View style={{ flex: 1 }} />
           </View>
@@ -439,7 +591,7 @@ const HomeScreen = () => {
       </Modal>
       {/* Main Content */}
       <ScrollView
-        contentContainerStyle={{ paddingBottom: 32, minHeight: Dimensions.get('window').height + 1 }}
+        contentContainerStyle={{ paddingBottom: 32 }}
         showsVerticalScrollIndicator={false}
         style={{ backgroundColor: '#fafafc' }}
       >
@@ -462,15 +614,14 @@ const HomeScreen = () => {
             <TouchableOpacity onPress={() => setDrawerVisible(true)}>
               <Ionicons name="menu-outline" size={22} color="#B0B0B0" style={{ marginRight: 8 }} />
             </TouchableOpacity>
-            <TextInput
-              style={{ flex: 1, fontSize: 16, color: '#222' }}
-              placeholder={'Send message to save...'}
-              placeholderTextColor="#B0B0B0"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              returnKeyType="search"
-              clearButtonMode="while-editing"
-            />
+            <TouchableOpacity 
+              style={{ flex: 1, paddingVertical: 12 }}
+              onPress={() => router.push('/search')}
+            >
+              <Text style={{ fontSize: 16, color: '#B0B0B0' }}>
+                Send message to save...
+              </Text>
+            </TouchableOpacity>
             <Ionicons name="search-outline" size={22} color="#B0B0B0" style={{ marginLeft: 8 }} />
           </View>
         </View>
@@ -518,7 +669,7 @@ const HomeScreen = () => {
                     const stat = stats[idx];
                     if (!stat) return <View key={col} style={{ flex: 1, marginHorizontal: 4 }} />;
                     return (
-                      <View
+                      <TouchableOpacity
                         key={stat.label}
                         style={{
                           flex: 1,
@@ -536,11 +687,13 @@ const HomeScreen = () => {
                           shadowRadius: 2,
                           shadowOffset: { width: 0, height: 1 },
                         }}
+                        onPress={() => handleMediaTypePress(stat.label.toLowerCase())}
+                        activeOpacity={0.7}
                       >
                         <Ionicons name={stat.icon as any} size={22} color="#222" style={{ marginRight: 10 }} />
                         <Text style={{ fontSize: 15, color: '#4E4E4E', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 20, letterSpacing: -0.23, flex: 1 }}>{stat.label}</Text>
                         <Text style={{ fontSize: 16, color: '#B0B0B0', fontWeight: '600', marginLeft: 8 }}>{stat.count}</Text>
-                      </View>
+                      </TouchableOpacity>
                     );
                   })}
                 </View>
@@ -550,7 +703,7 @@ const HomeScreen = () => {
             <View style={{ paddingHorizontal: 16, marginTop: 0, marginBottom: 32 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 11 }}>
                 <Text style={{ color: '#2264E6', fontWeight: '600', fontSize: 13, fontFamily: 'SF Pro Semibold', lineHeight: 18, letterSpacing: -0.08 }}>Smart Prompts</Text>
-                <Image source={require('../assets/images/Ai Loader.png')} style={{ width: 25, height: 25, marginLeft: 6, resizeMode: 'contain' }} />
+                <Image source={require('../assets/animations/47fa01cd0bd79a66b5ad97cdc5f4c41dd0caf508.gif')} style={{ width: 25, height: 25, marginLeft: 6, resizeMode: 'contain' }} />
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexDirection: 'row' }} contentContainerStyle={{ gap: 16 }}>
                 {smartPrompts.map((prompt, idx) => (
@@ -571,7 +724,29 @@ const HomeScreen = () => {
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                       <Text style={{ color: '#171717', fontSize: 12, flex: 1, fontWeight: '400', textAlign: 'left', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0 }} numberOfLines={2}>{prompt}</Text>
-                      <Ionicons name="arrow-forward-outline" size={20} color="#7B61FF" style={{ marginLeft: 12 }} />
+                      <View style={{ marginLeft: 12, width: 16, height: 16, justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+                        {/* Horizontal line */}
+                        <View style={{ 
+                          position: 'absolute',
+                          width: 12, 
+                          height: 1.5, 
+                          backgroundColor: '#7B61FF',
+                          left: 2,
+                          top: 7.25
+                        }} />
+                        {/* Arrow head */}
+                        <View style={{ 
+                          position: 'absolute',
+                          width: 6, 
+                          height: 6, 
+                          borderRightWidth: 1.5, 
+                          borderTopWidth: 1.5, 
+                          borderColor: '#7B61FF', 
+                          transform: [{ rotate: '45deg' }],
+                          right: 2,
+                          top: 5
+                        }} />
+                      </View>
                     </View>
                   </TouchableOpacity>
                 ))}
@@ -588,15 +763,11 @@ const HomeScreen = () => {
                   letterSpacing: -0.31,
                   lineHeight: 21
                 }}>By Topic</Text>
-                <TouchableOpacity onPress={() => router.push('/all-saves')} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/all-saves')} style={{ flexDirection: 'row', alignItems: 'center' }}>
                   <Text style={{ color: '#0065FF', fontWeight: '600', fontFamily: 'SF Pro Semibold', fontSize: 13, lineHeight: 18, letterSpacing: -0.08, marginRight: 2 }}>See all</Text>
                   <Ionicons name="chevron-forward" size={17} color="#1877F2" />
                 </TouchableOpacity>
-                {selectedTopic && (
-                  <TouchableOpacity onPress={() => setSelectedTopic(null)}>
-                    <Text style={{ color: '#007AFF', fontWeight: '500', fontSize: 13 }}>Clear Filter</Text>
-                  </TouchableOpacity>
-                )}
+
               </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
                 {tagTopics.map((topic, idx) => {
@@ -638,15 +809,73 @@ const HomeScreen = () => {
                     style={{ width: 154, height: 142, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#E5EAF0', marginRight: 12, overflow: 'hidden' }}
                     onPress={() => handleSavePress(save)}
                   >
-                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 80, borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
-                    <View style={{ paddingTop: 10, paddingLeft: 10, paddingRight: 10, paddingBottom: 9 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                        {save.type === 'link' && <Ionicons name="link-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        {save.type === 'file' && <Ionicons name="document-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        {save.type === 'image' && <Ionicons name="image-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        <Text style={{ fontSize: 12, color: '#222', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0, flex: 1 }} numberOfLines={2}>{save.title}</Text>
-                      </View>
-                    </View>
+                    {save.type === 'image' ? (
+                      <Image source={{ uri: save.image }} style={{ width: '100%', height: '100%', borderRadius: 8, resizeMode: 'cover' }} />
+                    ) : (
+                      <>
+                        <Image source={{ uri: save.image }} style={{ width: '100%', height: 80, borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
+                        <View style={{ paddingTop: 10, paddingLeft: 10, paddingRight: 10, paddingBottom: 9 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 6 }}>
+                            {save.type === 'link' && <Image source={require('../assets/images/link-2.png')} style={{ width: 12, height: 12, marginRight: 6, marginTop: 2, resizeMode: 'contain' }} />}
+                            {save.type === 'file' && <Image source={require('../assets/images/PDF.png')} style={{ width: 12, height: 12, marginRight: 6, marginTop: 2, resizeMode: 'contain' }} />}
+                            <Text style={{ 
+                              fontSize: 12, 
+                              color: '#3E3E3E', 
+                              fontWeight: '400', 
+                              fontFamily: 'SF Pro', 
+                              lineHeight: 16, 
+                              letterSpacing: 0, 
+                              flex: 1
+                            }} numberOfLines={2}>{save.title}</Text>
+                          </View>
+                          {/* Tags for Topic Cards - Hidden but kept for filtering */}
+                          {/* {save.tags && save.tags.length > 0 && (
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 3, marginTop: 2 }}>
+                              {save.tags.slice(0, 2).map((tag, tagIndex) => (
+                                <View key={`topic-tag-${save.id}-${tagIndex}-${tag}`} style={{
+                                  height: 18,
+                                  paddingHorizontal: 5,
+                                  paddingVertical: 1,
+                                  borderRadius: 5,
+                                  backgroundColor: '#ffffff',
+                                  borderWidth: 1,
+                                  borderColor: '#E0E0E0',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}>
+                                  <Text style={{
+                                    fontSize: 9,
+                                    color: '#666666',
+                                    fontWeight: '400',
+                                  }}>
+                                    {getTagEmoji(tag)} {tag}
+                                  </Text>
+                                </View>
+                              ))}
+                              {save.tags.length > 2 && (
+                                <View style={{
+                                  height: 18,
+                                  paddingHorizontal: 5,
+                                  paddingVertical: 1,
+                                  borderRadius: 5,
+                                  backgroundColor: '#f5f5f5',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}>
+                                  <Text style={{
+                                    fontSize: 9,
+                                    color: '#999',
+                                    fontWeight: '400',
+                                  }}>
+                                    +{save.tags.length - 2}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                          )} */}
+                        </View>
+                      </>
+                    )}
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -659,23 +888,91 @@ const HomeScreen = () => {
                   <Ionicons name="options-outline" size={20} color="#B0B0B0" />
                 </TouchableOpacity>
               </View>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
                 {recentUploads.map((save, idx) => (
-                  <TouchableOpacity
-                    key={save.id}
-                    style={{ width: 186, backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', marginRight: 12, marginBottom: 14, overflow: 'hidden' }}
-                    onPress={() => handleSavePress(save)}
-                  >
-                    <Image source={{ uri: save.image }} style={{ width: '100%', height: 90, borderTopLeftRadius: 12, borderTopRightRadius: 12 }} />
-                    <View style={{ padding: 10 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
-                        {save.type === 'link' && <Ionicons name="link-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        {save.type === 'file' && <Ionicons name="document-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        {save.type === 'image' && <Ionicons name="image-outline" size={12} color="#007AFF" style={{ marginRight: 6, marginTop: 2 }} />}
-                        <Text style={{ fontSize: 12, color: '#222', fontWeight: '400', fontFamily: 'SF Pro', lineHeight: 16, letterSpacing: 0, flex: 1 }} numberOfLines={2}>{save.title}</Text>
-                      </View>
-                    </View>
-                  </TouchableOpacity>
+                  <View key={save.id} style={{ width: (width - 44) / 2, marginRight: idx % 2 === 0 ? 12 : 0, marginBottom: 14 }}>
+                    <TouchableOpacity
+                      style={{ backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', overflow: 'hidden', height: save.type === 'image' ? 140 : 160 }}
+                      onPress={() => handleSavePress(save)}
+                    >
+                    {save.type === 'image' ? (
+                      <Image source={{ uri: save.image }} style={{ width: '100%', height: 140, borderRadius: 12, resizeMode: 'cover' }} />
+                    ) : (
+                      <>
+                        <Image source={{ uri: save.image }} style={{ width: '100%', height: 90, borderTopLeftRadius: 12, borderTopRightRadius: 12, resizeMode: 'cover' }} />
+                        <View style={{ padding: 10 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 }}>
+                            {save.type === 'link' && <Image source={require('../assets/images/link-2.png')} style={{ width: 12, height: 12, marginRight: 6, marginTop: 2, resizeMode: 'contain' }} />}
+                            {save.type === 'file' && <Image source={require('../assets/images/PDF.png')} style={{ width: 12, height: 12, marginRight: 6, marginTop: 2, resizeMode: 'contain' }} />}
+                            <Text style={{ 
+                              fontSize: 12, 
+                              color: '#3E3E3E', 
+                              fontWeight: '400', 
+                              fontFamily: 'SF Pro', 
+                              lineHeight: 16, 
+                              letterSpacing: 0, 
+                              flex: 1
+                            }} numberOfLines={2}>{save.title}</Text>
+                          </View>
+                          {/* Tags for Recent Saves - Hidden but kept for filtering */}
+                          {/* {save.tags && save.tags.length > 0 && (
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                              {save.tags.slice(0, 2).map((tag, tagIndex) => (
+                                <View key={`tag-${save.id}-${tagIndex}-${tag}`} style={{
+                                  height: 20,
+                                  paddingHorizontal: 6,
+                                  paddingVertical: 2,
+                                  borderRadius: 6,
+                                  backgroundColor: '#ffffff',
+                                  borderWidth: 1,
+                                  borderColor: '#E0E0E0',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}>
+                                  <Text style={{
+                                    fontSize: 10,
+                                    color: '#666666',
+                                    fontWeight: '400',
+                                  }}>
+                                    {getTagEmoji(tag)} {tag}
+                                  </Text>
+                                </View>
+                              ))}
+                              {save.tags.length > 2 && (
+                                <View style={{
+                                  height: 20,
+                                  paddingHorizontal: 6,
+                                  paddingVertical: 2,
+                                  borderRadius: 6,
+                                  backgroundColor: '#f5f5f5',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}>
+                                  <Text style={{
+                                    fontSize: 10,
+                                    color: '#999',
+                                    fontWeight: '400',
+                                  }}>
+                                    +{save.tags.length - 2}
+                                  </Text>
+                                </View>
+                              )}
+                            </View>
+                          )} */}
+                        </View>
+                      </>
+                    )}
+                    </TouchableOpacity>
+                    
+                    {/* Edge Case Message */}
+                    {save.hasEdgeCase && save.edgeCase && (
+                      <EdgeCaseMessageComponent
+                        edgeCase={save.edgeCase}
+                        onActionPress={(action) => handleEdgeCaseAction(action, save.id)}
+                        style={{ marginTop: 8, marginHorizontal: 0 }}
+                      />
+                    )}
+                  </View>
                 ))}
               </View>
             </View>

@@ -12,7 +12,10 @@ export interface LocalMessage {
   isBot: boolean;
   url?: string;
   filename?: string;
+  file_type?: string;
+  file_size?: number;
   tags?: string[];
+  starred?: boolean; // Add starred property
   linkPreview?: {
     title?: string;
     description?: string;
@@ -130,12 +133,165 @@ class ChatService {
   private authService = SupabaseAuthService.getInstance();
   private contentExtractor = contentExtractor;
   private tempStore = TemporaryContentStore.getInstance();
-  
+
   public static getInstance(): ChatService {
     if (!ChatService.instance) {
       ChatService.instance = new ChatService();
     }
     return ChatService.instance;
+  }
+
+  // Map a keyword/tag to an emoji with comprehensive coverage
+  private getEmojiForTag(tag: string): string {
+    const t = (tag || '').toLowerCase().trim();
+    
+    // Comprehensive emoji mapping for modern content categories
+    const mapping: Record<string, string> = {
+      // Technology & Development
+      'artificial intelligence': '🤖', 'ai': '🤖', 'machine learning': '🧠', 'web development': '💻',
+      'programming': '👨‍💻', 'software': '💻', 'app development': '📱', 'cybersecurity': '🔒',
+      'data science': '📊', 'blockchain': '⛓️', 'crypto': '₿', 'cloud computing': '☁️',
+      'technology': '💻', 'tech': '💻', 'innovation': '💡', 'startups': '🚀',
+      
+      // Business & Finance
+      'business strategy': '📈', 'marketing': '📢', 'finance': '💰', 'investment': '📊',
+      'venture capital': '💰', 'economics': '📈', 'entrepreneurship': '🚀', 'leadership': '👨‍💼',
+      'management': '👔', 'sales': '💼', 'cryptocurrency': '₿', 'stock market': '📈',
+      'real estate': '🏠', 'banking': '🏦', 'accounting': '🧮', 'budgeting': '💰',
+      
+      // Health & Wellness
+      'health': '🩺', 'fitness': '💪', 'nutrition': '🥗', 'mental health': '🧠',
+      'wellness': '🌱', 'meditation': '🧘', 'yoga': '🧘‍♀️', 'exercise': '🏃‍♂️',
+      'medical': '🏥', 'healthcare': '🩺', 'diet': '🥗', 'workout': '💪',
+      
+      // Education & Learning
+      'education': '🎓', 'learning': '📚', 'tutorial': '📖', 'course': '🎓',
+      'research': '🔬', 'academic': '🎓', 'science': '🔬', 'study': '📝',
+      'teaching': '👨‍🏫', 'training': '📚', 'skills': '🎯', 'knowledge': '🧠',
+      
+      // Lifestyle & Personal
+      'travel': '✈️', 'food': '🍽️', 'cooking': '👨‍🍳', 'recipes': '🍳',
+      'fashion': '👗', 'beauty': '💄', 'home': '🏠', 'interior design': '🛋️',
+      'photography': '📸', 'art': '🎨', 'music': '🎵', 'movies': '🎬',
+      'books': '📚', 'gaming': '🎮', 'sports': '⚽', 'hobbies': '🎨',
+      
+      // News & Current Events
+      'news': '📰', 'politics': '🏛️', 'current events': '📰', 'world news': '🌍',
+      'climate change': '🌱', 'environment': '🌍', 'sustainability': '♻️',
+      'social issues': '🤝', 'activism': '✊', 'human rights': '🤝',
+      
+      // Creative & Entertainment
+      'creative writing': '✍️', 'design': '🎨', 'video production': '🎬',
+      'content creation': '📹', 'social media': '📱', 'blogging': '✍️',
+      'entertainment': '🎭', 'comedy': '😂', 'drama': '🎭', 'documentary': '🎥',
+      
+      // Professional Development
+      'career': '💼', 'networking': '🤝', 'job search': '🔍', 'interview': '💼',
+      'professional development': '📈', 'workplace': '🏢', 'productivity': '⚡',
+      'time management': '⏰', 'goal setting': '🎯', 'motivation': '💪',
+      
+      // Specific Content Types
+      'tutorial': '📖', 'guide': '📋', 'how to': '🔧', 'tips': '💡',
+      'review': '⭐', 'comparison': '⚖️', 'analysis': '📊', 'opinion': '💭',
+      'case study': '📋', 'research paper': '📄', 'report': '📊', 'white paper': '📄',
+      
+      // Personal Tags
+      'important': '⭐', 'favorite': '❤️', 'later': '⏰', 'inspiration': '💡',
+      'ideas': '💭', 'planning': '📋', 'goals': '🎯', 'personal': '👤'
+    };
+
+    // Direct match first
+    if (mapping[t]) return mapping[t];
+    
+    // Enhanced pattern matching for better relevance
+    const patterns: [RegExp, string][] = [
+      // Tech patterns
+      [/\b(ai|artificial|intelligence|machine|learning|neural|deep)\b/i, '🤖'],
+      [/\b(web|frontend|backend|javascript|react|vue|angular)\b/i, '💻'],
+      [/\b(mobile|ios|android|app|application)\b/i, '📱'],
+      [/\b(data|analytics|statistics|visualization)\b/i, '📊'],
+      [/\b(crypto|bitcoin|ethereum|blockchain|defi)\b/i, '₿'],
+      [/\b(cloud|aws|azure|devops|infrastructure)\b/i, '☁️'],
+      
+      // Business patterns
+      [/\b(business|strategy|management|leadership|ceo)\b/i, '📈'],
+      [/\b(marketing|advertising|social media|content)\b/i, '📢'],
+      [/\b(finance|investment|trading|stocks|portfolio)\b/i, '💰'],
+      [/\b(startup|entrepreneur|venture|funding|ipo)\b/i, '🚀'],
+      
+      // Health patterns
+      [/\b(health|medical|doctor|hospital|treatment)\b/i, '🩺'],
+      [/\b(fitness|workout|exercise|gym|training)\b/i, '💪'],
+      [/\b(nutrition|diet|healthy|organic|wellness)\b/i, '🥗'],
+      [/\b(mental|psychology|therapy|mindfulness)\b/i, '🧠'],
+      
+      // Education patterns
+      [/\b(education|learning|course|tutorial|teach)\b/i, '🎓'],
+      [/\b(research|academic|science|study|university)\b/i, '🔬'],
+      [/\b(book|reading|literature|writing|author)\b/i, '📚'],
+      
+      // Lifestyle patterns
+      [/\b(travel|vacation|destination|tourism|flight)\b/i, '✈️'],
+      [/\b(food|cooking|recipe|restaurant|cuisine)\b/i, '🍽️'],
+      [/\b(fashion|style|clothing|beauty|makeup)\b/i, '👗'],
+      [/\b(home|house|interior|furniture|decoration)\b/i, '🏠'],
+      [/\b(photography|photo|camera|visual|images)\b/i, '📸'],
+      [/\b(music|song|audio|concert|artist)\b/i, '🎵'],
+      [/\b(movie|film|video|cinema|entertainment)\b/i, '🎬'],
+      [/\b(game|gaming|esports|play|fun)\b/i, '🎮'],
+      [/\b(sport|football|basketball|soccer|athletic)\b/i, '⚽'],
+      
+      // News patterns
+      [/\b(news|breaking|current|events|headlines)\b/i, '📰'],
+      [/\b(politics|government|policy|election|vote)\b/i, '🏛️'],
+      [/\b(climate|environment|green|sustainable|eco)\b/i, '🌱'],
+      [/\b(social|community|activism|rights|justice)\b/i, '🤝'],
+      
+      // Content type patterns
+      [/\b(guide|how.?to|tutorial|instruction)\b/i, '📋'],
+      [/\b(review|rating|opinion|feedback)\b/i, '⭐'],
+      [/\b(tip|advice|suggestion|recommendation)\b/i, '💡'],
+      [/\b(analysis|report|research|study|data)\b/i, '📊'],
+      [/\b(pdf|document|file|paper)\b/i, '📄'],
+      [/\b(video|youtube|vlog|stream)\b/i, '📹'],
+      [/\b(article|blog|post|content)\b/i, '📰'],
+      
+      // Fallback patterns
+      [/\b(important|priority|urgent)\b/i, '⭐'],
+      [/\b(idea|inspiration|creative)\b/i, '💡'],
+      [/\b(plan|goal|target|objective)\b/i, '🎯'],
+      [/\b(work|job|career|professional)\b/i, '💼']
+    ];
+    
+    // Check patterns for matches
+    for (const [pattern, emoji] of patterns) {
+      if (pattern.test(t)) {
+        return emoji;
+      }
+    }
+    
+    // Default fallback
+    return '';
+  }
+
+  private formatTagWithEmoji(tag: string): string {
+    const trimmed = (tag || '').trim();
+    const emoji = this.getEmojiForTag(trimmed);
+    if (!emoji) return trimmed;
+    // Safe emoji start detection using common ranges
+    const firstChar = trimmed[0] || '';
+    const startsWithEmoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(firstChar);
+    return startsWithEmoji || trimmed.startsWith(emoji) ? trimmed : `${emoji} ${trimmed}`;
+  }
+
+  // Format tag with proper capitalization and cleanup
+  private formatTagProperly(tag: string): string {
+    return tag
+      .toLowerCase()
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+      .trim();
   }
 
   // Get current authenticated user
@@ -171,12 +327,15 @@ class ChatService {
         const analysis = await fastAnalyzer.analyzeImageFast(url);
         const description = fastAnalyzer.generateDescription(analysis);
         const tags = fastAnalyzer.generateTags(analysis);
+
+        // Apply emoji formatting to auto-generated tags
+        const emojiTags = tags.map((t: string) => this.formatTagWithEmoji(t));
         
         console.log(`⚡ Superfast image analysis completed in ${analysis.processingTime}ms`);
         console.log('📝 Generated description:', description.substring(0, 100) + '...');
-        console.log('🏷️ Generated tags:', tags);
+        console.log('🏷️ Generated tags:', emojiTags);
         
-        return { description, tags };
+        return { description, tags: emojiTags };
       } else if (type === 'file' && filename) {
         console.log('🔍 Triggering AI document analysis for uploaded file...');
         
@@ -272,6 +431,15 @@ class ChatService {
   // Save message to database
   async saveMessage(message: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'>): Promise<ChatMessage> {
     try {
+      // Ensure we have a valid Supabase session before saving
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (!session || sessionError) {
+        console.error('❌ No valid Supabase session found:', sessionError);
+        throw new Error('User session expired. Please sign in again.');
+      }
+      
+      console.log('✅ Valid Supabase session confirmed for user:', session.user.id);
+      
       // Add debugging info
       console.log('💾 Attempting to save message to Supabase database...');
       console.log('📄 Message data:', {
@@ -422,7 +590,7 @@ class ChatService {
     }
   }
 
-  // Send image message with user-selected tags only
+  // Send image message with AI analysis and user-selected tags
   async sendImageMessage(uri: string, tags?: string[]): Promise<ChatMessage> {
     try {
       const user = await this.getCurrentUser();
@@ -453,61 +621,161 @@ class ChatService {
       const filename = `image_${Date.now()}.${extension}`;
       const { url, path } = await this.uploadFile(uri, filename, mimeType);
       
-      const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
-        user_id: user.id,
-        content: 'Image shared',
-        type: 'image',
-        timestamp: new Date().toLocaleTimeString('en-US', { 
-          hour12: true, 
-          hour: 'numeric', 
-          minute: '2-digit' 
-        }),
-        is_bot: false,
-        file_url: url,
-        file_path: path,
-        filename,
-        file_type: mimeType,
-        tags: tags && tags.length > 0 ? tags : undefined,
-      };
-
-      const savedMessage = await this.saveMessage(messageData);
+      // Analyze image content using FastImageAnalyzer
+      let aiAnalysis = '';
+      let visualDescription = '';
+      let generatedTags: string[] = [];
       
-      return savedMessage;
+      try {
+        console.log('⚡ Starting superfast image analysis for uploaded image...');
+        
+        const FastImageAnalyzer = await import('./fast-image-analyzer');
+        const fastAnalyzer = FastImageAnalyzer.default.getInstance();
+        
+        const analysis = await fastAnalyzer.analyzeImageFast(url);
+        visualDescription = fastAnalyzer.generateDescription(analysis);
+        generatedTags = fastAnalyzer.generateTags(analysis);
+        
+        // Create detailed AI analysis for storage
+        aiAnalysis = `Image Analysis: ${analysis.description}. Objects: ${analysis.objects.join(', ')}. Colors: ${analysis.colors.join(', ')}. Setting: ${analysis.setting || 'Unknown'}. Mood: ${analysis.mood}. Category: ${analysis.category}.`;
+        
+        console.log(`⚡ Superfast image analysis completed in ${analysis.processingTime}ms`);
+        console.log('📝 Generated description:', visualDescription.substring(0, 100) + '...');
+        console.log('🏷️ Generated tags:', generatedTags);
+        console.log('🔍 Analysis object details:', {
+          objects: analysis.objects,
+          colors: analysis.colors,
+          setting: analysis.setting,
+          mood: analysis.mood,
+          category: analysis.category
+        });
+        
+        // Update content to include analysis
+        const analysisContent = `Image shared - ${visualDescription}`;
+        
+        const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
+          user_id: user.id,
+          content: analysisContent,
+          type: 'image',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour12: true, 
+            hour: 'numeric', 
+            minute: '2-digit' 
+          }),
+          is_bot: false,
+          file_url: url,
+          file_path: path,
+          filename,
+          file_type: mimeType,
+          // Ensure only 1 autogenerated tag is saved and displayed
+          tags: generatedTags && generatedTags.length > 0 ? [generatedTags[0]] : [this.formatTagProperly(analysis.category || 'Image')],
+          ai_analysis: aiAnalysis,
+          visual_description: visualDescription,
+          content_category: analysis.category,
+          extraction_status: 'completed',
+          // Save AI analysis details to searchable fields
+          extracted_text: `${visualDescription}. Objects: ${(analysis.objects || []).join(', ') || 'None detected'}. Colors: ${(analysis.colors || []).join(', ') || 'None detected'}. Setting: ${analysis.setting || 'Unknown'}. Mood: ${analysis.mood || 'Unknown'}.`,
+          extracted_title: `Image Analysis - ${analysis.category || 'Photo'}`,
+          word_count: (visualDescription || '').split(' ').length
+        };
+
+        console.log('💾 About to save message with extracted content:', {
+          extracted_text: messageData.extracted_text,
+          extracted_title: messageData.extracted_title,
+          word_count: messageData.word_count
+        });
+
+        const savedMessage = await this.saveMessage(messageData);
+        
+        console.log('✅ Image message saved with AI analysis');
+        return savedMessage;
+        
+      } catch (analysisError) {
+        console.error('❌ Image analysis failed:', analysisError);
+        
+        // Fallback: save without analysis but with at least one tag
+        const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
+          user_id: user.id,
+          content: 'Image shared',
+          type: 'image',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour12: true, 
+            hour: 'numeric', 
+            minute: '2-digit' 
+          }),
+          is_bot: false,
+          file_url: url,
+          file_path: path,
+          filename,
+          file_type: mimeType,
+          tags: ['📷 Image'],
+          ai_analysis: 'Image analysis failed',
+          extraction_status: 'failed'
+        };
+
+        const savedMessage = await this.saveMessage(messageData);
+        return savedMessage;
+      }
     } catch (error) {
       console.error('Send image message error:', error);
       throw error;
     }
   }
 
-  // Send file message with user-selected tags only
+  // Send file message with content extraction for supported file types (especially PDFs)
   async sendFileMessage(uri: string, filename: string, fileType: string, fileSize: number, tags?: string[]): Promise<ChatMessage> {
     try {
+      console.log('📄 Sending file message with content extraction:', filename, fileType);
+      
       const user = await this.getCurrentUser();
       
       // Upload file first
       const { url, path } = await this.uploadFile(uri, filename, fileType);
       
-      const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
-        user_id: user.id,
-        content: 'Document shared',
-        type: 'file',
-        timestamp: new Date().toLocaleTimeString('en-US', { 
-          hour12: true, 
-          hour: 'numeric', 
-          minute: '2-digit' 
-        }),
-        is_bot: false,
-        file_url: url,
-        file_path: path,
-        filename,
-        file_type: fileType,
-        file_size: fileSize,
-        tags: tags && tags.length > 0 ? tags : undefined,
-      };
-
-      const savedMessage = await this.saveMessage(messageData);
+      // Use content extraction for supported file types (PDFs)
+      const isPDF = fileType.toLowerCase().includes('pdf') || filename.toLowerCase().endsWith('.pdf');
       
-      return savedMessage;
+      if (isPDF) {
+        console.log('📄 Processing PDF with content extraction...');
+        
+        // Use the content extraction workflow for PDFs
+        return await this.saveMessageWithContentExtraction(
+          'PDF document shared',
+          'file',
+          {
+            fileUrl: url,
+            filename,
+            filePath: path,
+            fileType,
+            fileSize,
+            tags: tags && tags.length > 0 ? tags : undefined
+          }
+        );
+      } else {
+        // For non-PDF files, use the basic approach (no content extraction yet)
+        const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
+          user_id: user.id,
+          content: 'Document shared',
+          type: 'file',
+          timestamp: new Date().toLocaleTimeString('en-US', { 
+            hour12: true, 
+            hour: 'numeric', 
+            minute: '2-digit' 
+          }),
+          is_bot: false,
+          file_url: url,
+          file_path: path,
+          filename,
+          file_type: fileType,
+          file_size: fileSize,
+          tags: tags && tags.length > 0 ? tags : undefined,
+          extraction_status: 'not_supported'
+        };
+
+        const savedMessage = await this.saveMessage(messageData);
+        console.log('📄 File message saved without content extraction (not supported for this file type)');
+        return savedMessage;
+      }
     } catch (error) {
       console.error('Send file message error:', error);
       throw error;
@@ -558,7 +826,11 @@ class ChatService {
         user_id: user.id,
         is_bot: false,
         tags: tags || [],
-        timestamp: new Date().toLocaleTimeString(),
+        timestamp: new Date().toLocaleTimeString('en-US', { 
+          hour12: true, 
+          hour: 'numeric', 
+          minute: '2-digit' 
+        }),
         file_url: url, // Keep original URL unchanged
         // Extracted content fields
         extracted_text: extractedContent?.full_text || extractedContent?.content || undefined,
@@ -623,8 +895,11 @@ class ChatService {
   // Get user's chat messages
   async getUserMessages(limit: number = 50): Promise<ChatMessage[]> {
     try {
+      console.log('🔍 Getting current user for message retrieval...');
       const user = await this.getCurrentUser();
+      console.log('👤 User ID for message retrieval:', user.id);
       
+      console.log('📡 Querying Supabase for messages...');
       const { data, error } = await supabase
         .from('chat_messages')
         .select('*')
@@ -633,14 +908,43 @@ class ChatService {
         .limit(limit);
 
       if (error) {
-        console.error('Get messages error:', error);
+        console.error('❌ Get messages error:', error);
         throw new Error(error.message);
       }
 
+      console.log(`✅ Retrieved ${data?.length || 0} messages from database`);
       return data || [];
     } catch (error) {
-      console.error('Get user messages error:', error);
+      console.error('❌ Get user messages error:', error);
       throw error;
+    }
+  }
+
+  // Get a specific message by ID
+  async getMessage(messageId: string): Promise<ChatMessage | null> {
+    try {
+      const user = await this.getCurrentUser();
+      
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('id', messageId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          // No rows returned - message not found
+          return null;
+        }
+        console.error('Get message error:', error);
+        throw new Error(error.message);
+      }
+
+      return data;
+    } catch (error) {
+      console.error('Get message error:', error);
+      return null;
     }
   }
 
@@ -702,7 +1006,10 @@ class ChatService {
       isBot: dbMessage.is_bot,
       url: dbMessage.file_url,
       filename: dbMessage.filename,
+      file_type: dbMessage.file_type,
+      file_size: dbMessage.file_size,
       tags: dbMessage.tags,
+      starred: dbMessage.tags?.includes('starred') || false, // Add starred property
     };
   }
 
@@ -842,14 +1149,16 @@ class ChatService {
 
     // Prepare message data
     const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
-      content: extractedContent 
-        ? `${content} [Content extracted: ${extractedContent.content.split(' ').length} words]`
-        : content,
+      content: content, // Just use the original content without the extraction info
       type,
       user_id: user.id,
       is_bot: options.isBot || false,
       tags: options.tags || [],
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: new Date().toLocaleTimeString('en-US', { 
+        hour12: true, 
+        hour: 'numeric', 
+        minute: '2-digit' 
+      }),
       file_url: options.fileUrl || undefined,
       filename: options.filename || undefined,
       file_path: options.filePath || undefined,
@@ -1053,7 +1362,7 @@ class ChatService {
                 word_count: extractedContent.content.split(' ').length,
                 content_category: message.type === 'link' ? 'web_article' : 'document',
                 extraction_status: 'completed',
-                ai_analysis: `Content extracted successfully. ${extractedContent.content.split(' ').length} words analyzed.`,
+                ai_analysis: `Content extracted successfully.`,
                 content_insights: `Title: ${extractedContent.title || 'Unknown'}, Author: ${extractedContent.author || 'Unknown'}`,
               })
               .eq('id', message.id);
@@ -1084,13 +1393,192 @@ class ChatService {
     }
   }
 
-  // Add this method to update the 'starred' property of a message (local only, no Supabase)
+  // Update the 'starred' property of a message by managing tags
   async updateMessageStarred(id: string, starred: boolean): Promise<void> {
-    // No-op: Only update local state/UI, do not update Supabase
-    // Optionally, you can update a local store or AsyncStorage here if needed
-    console.log(`(Local) Starred state for message ${id} set to:`, starred);
-    // If you have a local store, update it here
-    return;
+    try {
+      console.log(`🔄 Updating starred status for message ${id} to: ${starred}`);
+      
+      const user = await this.getCurrentUser();
+      
+      // Get the current message to update its tags
+      const { data: currentMessage, error: fetchError } = await supabase
+        .from('chat_messages')
+        .select('tags')
+        .eq('id', id)
+        .eq('user_id', user.id)
+        .single();
+
+      if (fetchError) {
+        console.error('❌ Error fetching message for starred update:', fetchError);
+        throw new Error(fetchError.message);
+      }
+
+      // Manage the 'starred' tag
+      let updatedTags = currentMessage.tags ? [...currentMessage.tags] : [];
+      
+      if (starred) {
+        // Add 'starred' tag if not present
+        if (!updatedTags.includes('starred')) {
+          updatedTags.push('starred');
+        }
+      } else {
+        // Remove 'starred' tag if present
+        updatedTags = updatedTags.filter(tag => tag !== 'starred');
+      }
+
+      // Update the message in database
+      const { error: updateError } = await supabase
+        .from('chat_messages')
+        .update({ 
+          tags: updatedTags.length > 0 ? updatedTags : null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (updateError) {
+        console.error('❌ Error updating message starred status:', updateError);
+        throw new Error(updateError.message);
+      }
+
+      console.log(`✅ Message ${id} starred status updated successfully. Tags: ${JSON.stringify(updatedTags)}`);
+    } catch (error) {
+      console.error('❌ Error in updateMessageStarred:', error);
+      throw error;
+    }
+  }
+
+  // Update message tags in the database
+  async updateMessageTags(id: string, tags: string[]): Promise<void> {
+    try {
+      console.log(`🔄 Updating tags for message ${id}:`, tags);
+      
+      const user = await this.getCurrentUser();
+      
+      // Update the message tags in the database
+      const { error } = await supabase
+        .from('chat_messages')
+        .update({ tags: tags })
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.error('❌ Error updating message tags:', error);
+        throw new Error(error.message);
+      }
+
+      console.log(`✅ Message ${id} tags updated successfully:`, tags);
+    } catch (error) {
+      console.error('❌ Error in updateMessageTags:', error);
+      throw error;
+    }
+  }
+
+  // Update message tags in the database
+  async updateMessageTags(id: string, tags: string[]): Promise<void> {
+    try {
+      console.log(`🔄 Updating tags for message ${id}:`, { tags });
+      
+      const user = await this.getCurrentUser();
+      
+      // Update the message tags in the database
+      const updateData = { tags: tags };
+
+      const { error } = await supabase
+        .from('chat_messages')
+        .update(updateData)
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (error) {
+        console.error('❌ Error updating message tags:', error);
+        throw new Error(error.message);
+      }
+
+      console.log(`✅ Message ${id} tags updated successfully:`, { tags });
+    } catch (error) {
+      console.error('❌ Error in updateMessageTags:', error);
+      throw error;
+    }
+  }
+
+  // Delete all messages for the current user
+  async deleteAllMessages(): Promise<void> {
+    try {
+      console.log('🗑️ Deleting all messages for current user...');
+      
+      const user = await this.getCurrentUser();
+      
+      // Get all messages to check for files that need to be deleted from storage
+      const { data: messages, error: fetchError } = await supabase
+        .from('chat_messages')
+        .select('file_path, type')
+        .eq('user_id', user.id);
+
+      if (fetchError) {
+        console.error('❌ Error fetching messages for deletion:', fetchError);
+        throw new Error(fetchError.message);
+      }
+
+      // Delete files from storage if they exist
+      if (messages && messages.length > 0) {
+        const imagePaths = messages.filter(m => m.type === 'image' && m.file_path).map(m => m.file_path);
+        const documentPaths = messages.filter(m => m.type === 'file' && m.file_path).map(m => m.file_path);
+
+        // Delete images from images bucket
+        if (imagePaths.length > 0) {
+          const { error: imageStorageError } = await supabase.storage
+            .from('images')
+            .remove(imagePaths);
+          
+          if (imageStorageError) {
+            console.error('❌ Error deleting images from storage:', imageStorageError);
+            // Don't throw here, continue with message deletion
+          } else {
+            console.log(`🗑️ Deleted ${imagePaths.length} images from storage`);
+          }
+        }
+
+        // Delete documents from documents bucket
+        if (documentPaths.length > 0) {
+          const { error: docStorageError } = await supabase.storage
+            .from('documents')
+            .remove(documentPaths);
+          
+          if (docStorageError) {
+            console.error('❌ Error deleting documents from storage:', docStorageError);
+            // Don't throw here, continue with message deletion
+          } else {
+            console.log(`🗑️ Deleted ${documentPaths.length} documents from storage`);
+          }
+        }
+      }
+
+      // Delete all messages from database
+      const { error: deleteError } = await supabase
+        .from('chat_messages')
+        .delete()
+        .eq('user_id', user.id);
+
+      if (deleteError) {
+        console.error('❌ Error deleting messages from database:', deleteError);
+        throw new Error(deleteError.message);
+      }
+
+      // Clear temporary storage as well
+      try {
+        await this.tempStore.clearOldContent(0); // Clear all content regardless of age
+        console.log('🗑️ Cleared temporary extracted content storage');
+      } catch (tempError) {
+        console.error('⚠️ Failed to clear temporary storage:', tempError);
+        // Don't throw here, main deletion was successful
+      }
+
+      console.log(`✅ Successfully deleted all messages and associated files for user ${user.id}`);
+    } catch (error) {
+      console.error('❌ Error in deleteAllMessages:', error);
+      throw error;
+    }
   }
 
   // Process existing messages for content extraction
@@ -1199,6 +1687,59 @@ class ChatService {
     }
   }
 
+  // Debug method to check extracted content status
+  async debugExtractedContent(): Promise<any> {
+    try {
+      console.log('🔍 Debugging extracted content status...');
+      const user = await this.getCurrentUser();
+      
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('id, type, filename, extracted_text, extracted_title, word_count, extraction_status')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (error) {
+        console.error('❌ Debug query error:', error);
+        return { error: error.message };
+      }
+
+      const messagesWithExtractedText = data?.filter(msg => msg.extracted_text && msg.extracted_text.length > 0) || [];
+      const messagesWithoutExtractedText = data?.filter(msg => !msg.extracted_text || msg.extracted_text.length === 0) || [];
+
+      console.log('📊 Extracted content debug results:', {
+        totalMessages: data?.length || 0,
+        withExtractedText: messagesWithExtractedText.length,
+        withoutExtractedText: messagesWithoutExtractedText.length,
+        messagesWithExtractedText: messagesWithExtractedText.map(msg => ({
+          id: msg.id,
+          type: msg.type,
+          filename: msg.filename,
+          extractedTextLength: msg.extracted_text?.length || 0,
+          wordCount: msg.word_count || 0,
+          extractionStatus: msg.extraction_status || 'unknown'
+        }))
+      });
+
+      return {
+        totalMessages: data?.length || 0,
+        withExtractedText: messagesWithExtractedText.length,
+        withoutExtractedText: messagesWithoutExtractedText.length,
+        messagesWithExtractedText: messagesWithExtractedText.map(msg => ({
+          id: msg.id,
+          type: msg.type,
+          filename: msg.filename,
+          extractedTextLength: msg.extracted_text?.length || 0,
+          wordCount: msg.word_count || 0,
+          extractionStatus: msg.extraction_status || 'unknown'
+        }))
+      };
+    } catch (error) {
+      console.error('❌ Debug extracted content error:', error);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
 
 
   // Display database extracted_text in console for debugging

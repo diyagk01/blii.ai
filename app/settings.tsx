@@ -1,7 +1,8 @@
 import { Feather, Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
-import { SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import SupabaseAuthService from '../services/supabase-auth';
 
 const settingsOptions = [
   {
@@ -28,6 +29,33 @@ const settingsOptions = [
 
 export default function SettingsScreen() {
   const router = useRouter();
+
+  const handleSignOut = async () => {
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to sign out?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+                      onPress: async () => {
+              try {
+                await SupabaseAuthService.getInstance().signOut();
+                router.replace('/auth');
+              } catch (error) {
+                console.error('Sign out error:', error);
+                Alert.alert('Error', 'Failed to sign out. Please try again.');
+              }
+            },
+        },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.headerRow}>
@@ -45,6 +73,14 @@ export default function SettingsScreen() {
             <Ionicons name="chevron-forward" size={20} color="#B0B0B0" style={{ marginLeft: 'auto' }} />
           </TouchableOpacity>
         ))}
+        
+        {/* Sign Out Option */}
+        <TouchableOpacity style={[styles.optionCard, styles.signOutCard]} activeOpacity={0.8} onPress={handleSignOut}>
+          <View style={[styles.iconBox, styles.signOutIconBox]}>
+            <Ionicons name="log-out-outline" size={22} color="#EF4444" />
+          </View>
+          <Text style={[styles.optionLabel, styles.signOutLabel]}>Sign Out</Text>
+        </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
@@ -111,5 +147,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#222',
     fontWeight: '500',
+  },
+  signOutCard: {
+    borderWidth: 1,
+    borderColor: '#FEE2E2',
+    backgroundColor: '#FEF2F2',
+  },
+  signOutIconBox: {
+    backgroundColor: '#FEE2E2',
+  },
+  signOutLabel: {
+    color: '#EF4444',
   },
 }); 

@@ -6,13 +6,18 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "blii",
-    "redirects": ["blii://auth/callback"],
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.diyagirishkumar.blii",
-      "usesAppleSignIn": true
+      "usesAppleSignIn": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to allow you to select and share images with the AI assistant for analysis and conversation.",
+        "NSCameraUsageDescription": "This app needs access to your camera to allow you to take photos that can be shared with the AI assistant for analysis and conversation.",
+        "NSMicrophoneUsageDescription": "This app may need access to your microphone for voice-related features."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -42,6 +47,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "e71f9d80-583b-459e-8396-dac88a5d7815"
+      }
     }
   }
 }

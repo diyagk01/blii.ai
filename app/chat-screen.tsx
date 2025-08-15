@@ -1,9 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Easing, Image,
@@ -22,7 +25,11 @@ import {
 } from 'react-native';
 import { SafeAreaView as SafeAreaContextView } from 'react-native-safe-area-context';
 import ChatService from '../services/chat';
+import { cleanDisplayTitle } from '../services/html-utils';
 import OpenAIService from '../services/openai';
+
+// Global flag to prevent duplicate welcome messages across component re-mounts
+let globalWelcomeMessagesShown = false;
 
 // Typing indicator component
 const TypingIndicator = () => {
@@ -41,9 +48,46 @@ const TypingIndicator = () => {
   
   return (
     <View style={styles.typingIndicator}>
-      <Text style={styles.typingText}>Bill is thinking{dots}</Text>
+      <Text style={styles.typingText}>{dots}</Text>
     </View>
   );
+};
+
+// ClickableText component for making links clickable in AI messages
+const ClickableText = ({ text, style }: { text: string; style?: any }) => {
+  const detectLinks = (text: string): string[] => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    return text.match(urlRegex) || [];
+  };
+
+  const renderTextWithLinks = () => {
+    const links = detectLinks(text);
+    if (links.length === 0) {
+      return <Text style={style}>{text}</Text>;
+    }
+
+    const parts = text.split(/(https?:\/\/[^\s]+)/g);
+    return (
+      <Text style={style}>
+        {parts.map((part, index) => {
+          if (links.includes(part)) {
+            return (
+              <Text
+                key={index}
+                style={[style, { color: '#007AFF', textDecorationLine: 'underline' }]}
+                onPress={() => Linking.openURL(part)}
+              >
+                {part}
+              </Text>
+            );
+          }
+          return <Text key={index}>{part}</Text>;
+        })}
+      </Text>
+    );
+  };
+
+  return renderTextWithLinks();
 };
 
 interface Message {
@@ -54,7 +98,10 @@ interface Message {
   isBot: boolean;
   url?: string;
   filename?: string;
+  file_type?: string;
+  file_size?: number;
   tags?: string[];
+
   // Link preview data
   linkPreview?: {
     title?: string;
@@ -62,6 +109,16 @@ interface Message {
     image?: string;
     domain?: string;
   };
+  // Referenced content for AI messages
+  referencedContent?: {
+    title?: string;
+    description?: string;
+    image?: string;
+    domain?: string;
+    url?: string;
+  };
+  // Reply information
+  replyTo?: Message;
 }
 
 const ChatScreen = () => {
@@ -70,6 +127,7 @@ const ChatScreen = () => {
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadingFileType, setUploadingFileType] = useState<string>('');
   const scrollViewRef = useRef<ScrollView>(null);
   const chatService = ChatService.getInstance();
   const openAIService = OpenAIService.getInstance();
@@ -79,11 +137,23 @@ const ChatScreen = () => {
   const [currentTagInput, setCurrentTagInput] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [pendingMessage, setPendingMessage] = useState<Partial<Message> | null>(null);
+  const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
+  
+  // Tag suggestions bottom sheet state
+  const [showTagSuggestions, setShowTagSuggestions] = useState(false);
+  const [currentMessageForTagging, setCurrentMessageForTagging] = useState<Message | null>(null);
+  
+
   
   // Delete modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [messageToDelete, setMessageToDelete] = useState<Message | null>(null);
   const [deleting, setDeleting] = useState(false);
+  
+  // Clear chat loading state
+  const [clearingMessages, setClearingMessages] = useState(false);
+  const [deletingProgress, setDeletingProgress] = useState(0);
+  const [deletingText, setDeletingText] = useState('Preparing to delete...');
   
   // Context menu state
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -107,8 +177,15 @@ const ChatScreen = () => {
   // Reply preview state
   const [replyPreview, setReplyPreview] = useState<Message | null>(null);
   
+  // Message loading state
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [hasLoadedMessages, setHasLoadedMessages] = useState(false);
+  
   // Animation values for each message
   const messageAnimations = useRef<{ [key: number]: Animated.Value }>({});
+  
+  // Animation for delete loading spinner
+  const deleteSpinValue = useRef(new Animated.Value(0)).current;
   
   // Unique ID generator
   const messageIdCounter = useRef(1000);
@@ -218,7 +295,7 @@ const ChatScreen = () => {
         title: `Link from ${domain}`,
         description: 'Content preview unavailable',
         domain: domain,
-        image: 'https://via.placeholder.com/400x300/666/white?text=🔗+Link',
+        image: `https://via.placeholder.com/400x300/808080/white?text=🔗+${encodeURIComponent(domain.substring(0, 15))}`,
         keyPoints: [],
         contentType: 'other'
       };
@@ -258,6 +335,243 @@ const ChatScreen = () => {
     });
   };
 
+  // Helper function to format file details dynamically
+  const getFileDetails = (message: Message): string => {
+    const filename = message.filename || '';
+    const fileType = message.file_type || '';
+    const fileSize = message.file_size || 0;
+    
+    console.log('📄 getFileDetails called for:', {
+      filename,
+      fileType,
+      fileSize,
+      messageId: message.id
+    });
+    
+    // Determine file type from filename or file_type
+    let type = 'Document';
+    if (filename.toLowerCase().endsWith('.pdf') || fileType.toLowerCase().includes('pdf')) {
+      type = 'PDF';
+    } else if (filename.toLowerCase().endsWith('.doc') || filename.toLowerCase().endsWith('.docx') || fileType.toLowerCase().includes('word')) {
+      type = 'Word';
+    } else if (filename.toLowerCase().endsWith('.xls') || filename.toLowerCase().endsWith('.xlsx') || fileType.toLowerCase().includes('excel')) {
+      type = 'Excel';
+    } else if (filename.toLowerCase().endsWith('.ppt') || filename.toLowerCase().endsWith('.pptx') || fileType.toLowerCase().includes('powerpoint')) {
+      type = 'PowerPoint';
+    } else if (filename.toLowerCase().endsWith('.txt') || fileType.toLowerCase().includes('text')) {
+      type = 'Text';
+    } else if (filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.jpeg') || filename.toLowerCase().endsWith('.png') || fileType.toLowerCase().includes('image')) {
+      type = 'Image';
+    }
+    
+    // Format file size
+    let sizeText = '';
+    if (fileSize && fileSize > 0) {
+      if (fileSize < 1024) {
+        sizeText = `${fileSize} B`;
+      } else if (fileSize < 1024 * 1024) {
+        sizeText = `${(fileSize / 1024).toFixed(1)} KB`;
+      } else {
+        sizeText = `${(fileSize / (1024 * 1024)).toFixed(1)} MB`;
+      }
+    } else {
+      // Try to get file size from URL if available
+      if (message.url && message.url.startsWith('file://')) {
+        sizeText = 'Calculating...';
+        // We could add async file size calculation here in the future
+      } else {
+        sizeText = 'Unknown size';
+      }
+    }
+    
+    console.log('📄 File details result:', `${type} • ${sizeText}`);
+    
+    // For now, we'll show just the type and size since page count requires PDF parsing
+    // In the future, you could add page_count to the message object and use it here
+    return `${type} • ${sizeText}`;
+  };
+
+  // Helper function to get emoji for a tag - consistent with message creation
+  const getTagEmoji = (tagName: string): string => {
+    // Check predefined tags first
+    const predefinedTag = predefinedTags.find(t => t.name.toLowerCase() === tagName.toLowerCase());
+    if (predefinedTag) {
+      return predefinedTag.emoji;
+    }
+    
+    // Use the same logic as getEmojiForTag for consistency
+    return getEmojiForTag(tagName);
+  };
+
+  // Smart emoji assignment based on tag content
+  const getSmartTagEmoji = (tagName: string): string => {
+    const lowerTag = tagName.toLowerCase();
+    
+    // Technology & Programming
+    if (lowerTag.match(/\b(technology|programming|development|coding|software|app|tech|digital|automation|ai|artificial|machine|algorithm|data|analytics|startup|innovation|react|javascript|python|github|opensource|tutorial|code)\b/)) {
+      return '💻';
+    }
+    
+    // Business & Finance
+    if (lowerTag.match(/\b(business|finance|investment|portfolio|strategy|entrepreneur|marketing|sales|revenue|profit|economy|market|corporate|professional|career|jobsearch|interview|resume|linkedin)\b/)) {
+      return '💼';
+    }
+    
+    // Health & Medical
+    if (lowerTag.match(/\b(health|medical|wellness|nutrition|diet|doctor|hospital|medicine|therapy|mental|psychology|healthcare)\b/)) {
+      return '🏥';
+    }
+    
+    // Education & Learning
+    if (lowerTag.match(/\b(education|learning|study|course|tutorial|university|school|research|academic|knowledge|skill|training|guide|instruction|reference)\b/)) {
+      return '📚';
+    }
+    
+    // Science & Research
+    if (lowerTag.match(/\b(science|research|experiment|discovery|analysis|physics|biology|chemistry|climate|environment|space|laboratory)\b/)) {
+      return '🔬';
+    }
+    
+    // Design & Creative
+    if (lowerTag.match(/\b(design|creative|art|visual|graphics|aesthetic|photography|video|image|figma|dribbble|brand|logo)\b/)) {
+      return '🎨';
+    }
+    
+    // Productivity & Tools
+    if (lowerTag.match(/\b(productivity|efficiency|workflow|organize|method|system|process|optimize|tool|notion)\b/)) {
+      return '⚡';
+    }
+    
+    // Communication & Social
+    if (lowerTag.match(/\b(social|discussion|community|communication|message|chat|forum|twitter|reddit|conversation)\b/)) {
+      return '💬';
+    }
+    
+    // Travel & Places
+    if (lowerTag.match(/\b(travel|trip|vacation|hotel|flight|booking|destination|explore|adventure|journey)\b/)) {
+      return '✈️';
+    }
+    
+    // Food & Cooking
+    if (lowerTag.match(/\b(cooking|recipe|food|kitchen|meal|nutrition|restaurant|chef|ingredient)\b/)) {
+      return '🍳';
+    }
+    
+    // Sports & Fitness
+    if (lowerTag.match(/\b(fitness|workout|exercise|gym|sport|training|athlete|running|yoga|health)\b/)) {
+      return '💪';
+    }
+    
+    // Entertainment & Media
+    if (lowerTag.match(/\b(video|movie|entertainment|youtube|music|gaming|streaming|podcast|media|review)\b/)) {
+      return '🎬';
+    }
+    
+    // Documents & Files
+    if (lowerTag.match(/\b(document|pdf|file|report|spreadsheet|presentation|manual|documentation)\b/)) {
+      return '📄';
+    }
+    
+    // News & Updates
+    if (lowerTag.match(/\b(news|update|announcement|breaking|politics|current|events|journalism)\b/)) {
+      return '📰';
+    }
+    
+    // Shopping & Commerce
+    if (lowerTag.match(/\b(shopping|purchase|product|review|ecommerce|retail|store|marketplace)\b/)) {
+      return '🛒';
+    }
+    
+    // Home & Lifestyle
+    if (lowerTag.match(/\b(home|lifestyle|interior|furniture|garden|decoration|diy|organization)\b/)) {
+      return '🏠';
+    }
+    
+    // Photography & Visual
+    if (lowerTag.match(/\b(photography|photo|visual|camera|image|picture|memories|gallery)\b/)) {
+      return '📸';
+    }
+    
+    // Money & Expenses
+    if (lowerTag.match(/\b(finance|money|expense|budget|invoice|receipt|bill|payment|banking)\b/)) {
+      return '💰';
+    }
+    
+    // Nature & Environment
+    if (lowerTag.match(/\b(nature|environment|climate|green|sustainability|eco|organic|planet)\b/)) {
+      return '🌱';
+    }
+    
+    // Transportation
+    if (lowerTag.match(/\b(transport|car|vehicle|driving|traffic|uber|taxi|public|transit)\b/)) {
+      return '🚗';
+    }
+    
+    // Events & Calendar
+    if (lowerTag.match(/\b(event|meeting|calendar|schedule|appointment|conference|webinar|seminar)\b/)) {
+      return '📅';
+    }
+    
+    // Books & Reading
+    if (lowerTag.match(/\b(book|reading|literature|novel|author|publication|library|article|blog)\b/)) {
+      return '📖';
+    }
+    
+    // Security & Privacy
+    if (lowerTag.match(/\b(security|privacy|password|encryption|safety|protection|cybersecurity)\b/)) {
+      return '🔒';
+    }
+    
+    // Communication Platforms
+    if (lowerTag.match(/\b(email|message|communication|slack|teams|zoom|meeting|call)\b/)) {
+      return '✉️';
+    }
+    
+    // Goal-specific tags
+    if (lowerTag.includes('goal') || lowerTag.includes('objective') || lowerTag.includes('target')) {
+      return '🎯';
+    }
+    
+    // Time-related tags
+    if (lowerTag.includes('time') || lowerTag.includes('schedule') || lowerTag.includes('deadline')) {
+      return '⏰';
+    }
+    
+    // Location-based tags
+    if (lowerTag.includes('location') || lowerTag.includes('place') || lowerTag.includes('address')) {
+      return '📍';
+    }
+    
+    // Tag based on common suffixes/patterns
+    if (lowerTag.endsWith('ing') || lowerTag.includes('process')) {
+      return '⚙️';
+    }
+    
+    if (lowerTag.includes('quick') || lowerTag.includes('fast') || lowerTag.includes('rapid')) {
+      return '⚡';
+    }
+    
+    if (lowerTag.includes('important') || lowerTag.includes('urgent') || lowerTag.includes('priority')) {
+      return '❗';
+    }
+    
+    if (lowerTag.includes('idea') || lowerTag.includes('inspiration') || lowerTag.includes('creative')) {
+      return '💡';
+    }
+    
+    if (lowerTag.includes('question') || lowerTag.includes('help') || lowerTag.includes('support')) {
+      return '❓';
+    }
+    
+    // Default emojis based on general categories
+    if (lowerTag.length > 8) { // Longer, more specific terms
+      return '🔖';
+    }
+    
+    // Default fallback
+    return '🏷️';
+  };
+
   // Predefined tags for quick selection with emojis
   const predefinedTags = [
     { name: 'Health', emoji: '🍃' },
@@ -265,7 +579,7 @@ const ChatScreen = () => {
     { name: 'Fitness', emoji: '💪' },
     { name: 'Travel', emoji: '✈️' },
     { name: 'To Read', emoji: '📖' },
-    { name: 'Custom Tag', emoji: '🏷️' }
+
   ];
 
   const getInitialMessages = (): Message[] => [
@@ -395,19 +709,32 @@ const ChatScreen = () => {
   };
 
   // Load messages from database
-  const loadMessages = async () => {
+  const loadMessages = async (retryCount = 0) => {
+    // Prevent multiple simultaneous loads
+    if (loadingMessages) {
+      console.log('🔄 Already loading messages, skipping...');
+      return;
+    }
+    
     try {
-      console.log('Loading messages from Supabase...');
+      setLoadingMessages(true);
+      console.log(`🔄 Loading messages from Supabase... (attempt ${retryCount + 1})`);
       const dbMessages = await chatService.getUserMessages();
       
+      console.log(`📊 Found ${dbMessages.length} messages in database`);
+      
       if (dbMessages.length > 0) {
-        // Convert database messages to local format with unique IDs
+        console.log('✅ Converting database messages to local format...');
+        // Convert database messages to local format with unique IDs and starred status
         const localMessages = dbMessages.map((msg, index) => ({
           ...chatService.convertToLocalMessage(msg),
           id: generateUniqueId(), // Ensure unique ID
+          starred: msg.tags?.includes('starred') || false, // Add starred property for consistency
         }));
         
+        console.log(`✅ Setting ${localMessages.length} messages to state`);
         setMessages(localMessages);
+        setHasLoadedMessages(true);
         
         // Generate link previews for link messages
         localMessages.forEach(async (message) => {
@@ -430,13 +757,28 @@ const ChatScreen = () => {
           scrollViewRef.current?.scrollToEnd({ animated: true });
         }, 500);
       } else {
+        console.log('📝 No messages found in database, showing welcome messages');
         // Show welcome messages if no messages in database
         showMessagesSequentially();
+        setHasLoadedMessages(true);
       }
     } catch (error) {
-      console.error('Error loading messages:', error);
-      // Show welcome messages on error
-      showMessagesSequentially();
+      console.error('❌ Error loading messages:', error);
+      
+      // Retry logic for authentication or connection issues
+      if (retryCount < 2) {
+        console.log(`🔄 Retrying message load in 1 second... (attempt ${retryCount + 1})`);
+        setTimeout(() => {
+          loadMessages(retryCount + 1);
+        }, 1000);
+      } else {
+        console.log('❌ Max retries reached, showing welcome messages');
+        // Show welcome messages on error after max retries
+        showMessagesSequentially();
+        setHasLoadedMessages(true);
+      }
+    } finally {
+      setLoadingMessages(false);
     }
   };
 
@@ -446,6 +788,23 @@ const ChatScreen = () => {
   };
 
   const showMessagesSequentially = () => {
+    console.log('🔍 showMessagesSequentially called - messages.length:', messages.length, 'globalWelcomeMessagesShown:', globalWelcomeMessagesShown);
+    
+    // Prevent duplicate welcome messages using global flag
+    if (globalWelcomeMessagesShown) {
+      console.log('🔄 Global flag: Welcome messages already shown, skipping...');
+      return;
+    }
+    
+    // Prevent duplicate welcome messages by checking if messages already exist
+    if (messages.length > 0) {
+      console.log('🔄 Messages already exist, skipping welcome messages...');
+      return;
+    }
+    
+    console.log('🎬 Showing welcome messages sequentially...');
+    globalWelcomeMessagesShown = true;
+    
     const initialMessages = getInitialMessages();
     initialMessages.forEach((message: Message, index: number) => {
       // Create animation value for this message
@@ -453,7 +812,13 @@ const ChatScreen = () => {
       
       setTimeout(() => {
         // Add message to state
-        setMessages(prev => [...prev, message]);
+        console.log('➕ Adding welcome message:', message.content);
+        setMessages(prev => {
+          console.log('📝 Current messages before adding:', prev.length);
+          const newMessages = [...prev, message];
+          console.log('📝 Messages after adding:', newMessages.length);
+          return newMessages;
+        });
         
         // Animate message appearance
         Animated.timing(messageAnimations.current[message.id], {
@@ -471,8 +836,37 @@ const ChatScreen = () => {
     });
   };
 
+  // Debug function to test document extraction
+  const debugDocumentExtraction = async () => {
+    try {
+      console.log('🧪 Debugging document extraction...');
+      const debugResult = await chatService.debugExtractedContent();
+      console.log('📊 Debug result:', JSON.stringify(debugResult, null, 2));
+      
+      // Show debug info in an alert
+      const message = `Debug Results:
+Total Messages: ${debugResult.totalMessages}
+With Extracted Text: ${debugResult.withExtractedText}
+Without Extracted Text: ${debugResult.withoutExtractedText}
+
+Messages with extracted text:
+${debugResult.messagesWithExtractedText?.map((msg: any) => 
+  `- ${msg.type}: ${msg.filename} (${msg.extractedTextLength} chars, ${msg.wordCount} words)`
+).join('\n') || 'None'}`;
+      
+      Alert.alert('Document Extraction Debug', message);
+    } catch (error) {
+      console.error('❌ Debug failed:', error);
+      Alert.alert('Debug Error', 'Failed to debug document extraction');
+    }
+  };
+
   const handleSend = async () => {
     if (!inputText.trim()) return;
+
+    // Check if this is a reply to a specific message
+    const isReply = replyPreview !== null;
+    const originalMessage = inputText;
 
     // Detect if message contains links
     const links = detectLinks(inputText.trim());
@@ -485,7 +879,7 @@ const ChatScreen = () => {
         // Generate preview first
         const preview = await fetchLinkPreview(url);
         
-        // Create pending message for tagging
+        // Generate automatic tags for the link
         const newMessage: Partial<Message> = {
           id: generateUniqueId(),
           content: inputText,
@@ -496,11 +890,104 @@ const ChatScreen = () => {
           linkPreview: preview,
         };
 
-        setPendingMessage(newMessage);
-        setShowTagModal(true);
-        setInputText(''); // Clear input when showing modal
+        // Generate automatic tags using improved AI tag generation
+        let autoTags: string[] = [];
+        try {
+          if (preview && (preview.title || preview.description)) {
+            const contentToAnalyze = `${preview.title || ''} ${preview.description || ''}`.trim();
+            if (contentToAnalyze) {
+              // Use OpenAI service for better, single tag generation
+              const aiTags = await openAIService.generateTagSuggestions(contentToAnalyze);
+              // Apply emoji formatting to the AI-generated tag
+              autoTags = aiTags.map(tag => {
+                // Check if tag already starts with an emoji (comprehensive emoji detection)
+                const trimmedTag = tag.trim();
+                const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(trimmedTag);
+                
+                if (startsWithEmoji) {
+                  console.log('🏷️ Tag already has emoji:', trimmedTag);
+                  return trimmedTag; // Return as-is if already has emoji
+                }
+                
+                const emoji = getEmojiForTag(trimmedTag);
+                const formattedTag = emoji ? `${emoji} ${trimmedTag}` : trimmedTag;
+                console.log('🏷️ Formatted tag:', formattedTag, 'Original:', trimmedTag, 'Emoji:', emoji);
+                return formattedTag;
+              });
+              console.log('🤖 AI-generated tags for link:', autoTags);
+            }
+          }
+          // Fallback to local generation if AI fails
+          if (autoTags.length === 0) {
+            const fallbackTags = generateTagSuggestions(newMessage);
+            // Apply emoji formatting to fallback tags too
+            autoTags = fallbackTags.map(tag => {
+              const trimmedTag = tag.trim();
+              const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(trimmedTag);
+              
+              if (startsWithEmoji) {
+                console.log('🏷️ Fallback tag already has emoji:', trimmedTag);
+                return trimmedTag;
+              }
+              
+              const emoji = getEmojiForTag(trimmedTag);
+              const formattedTag = emoji ? `${emoji} ${trimmedTag}` : trimmedTag;
+              console.log('🏷️ Formatted fallback tag:', formattedTag, 'Original:', trimmedTag);
+              return formattedTag;
+            });
+          }
+        } catch (error) {
+          console.warn('AI tag generation failed, using fallback:', error);
+          const fallbackTags = generateTagSuggestions(newMessage);
+          // Apply emoji formatting to fallback tags too
+          autoTags = fallbackTags.map(tag => {
+            const trimmedTag = tag.trim();
+            const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(trimmedTag);
+            
+            if (startsWithEmoji) {
+              console.log('🏷️ Error fallback tag already has emoji:', trimmedTag);
+              return trimmedTag;
+            }
+            
+            const emoji = getEmojiForTag(trimmedTag);
+            const formattedTag = emoji ? `${emoji} ${trimmedTag}` : trimmedTag;
+            console.log('🏷️ Formatted error fallback tag:', formattedTag, 'Original:', trimmedTag);
+            return formattedTag;
+          });
+        }
+        
+        // Save link with automatic tags
+        const savedMessage = await chatService.sendLinkMessage(
+          inputText,
+          url,
+          preview,
+          autoTags
+        );
+        
+        // Create final message for UI
+        const finalMessage: Message = {
+          id: generateUniqueId(),
+          content: savedMessage?.content || inputText,
+          type: 'link',
+          timestamp: savedMessage?.timestamp || getCurrentTimestamp(),
+          isBot: false,
+          url: url,
+          linkPreview: preview,
+          tags: autoTags,
+        };
+        
+        setMessages(prev => [...prev, finalMessage]);
+        setInputText(''); // Clear input
+        setReplyPreview(null); // Clear reply preview
+        
+        // Auto-scroll to new content
+        setTimeout(() => {
+          scrollViewRef.current?.scrollToEnd({ animated: true });
+        }, 300);
+        
+        console.log('Link uploaded with automatic tags:', autoTags);
       } catch (error) {
-        console.error('Error generating link preview:', error);
+        console.error('Error processing link:', error);
         Alert.alert('Error', 'Failed to process link. Please try again.');
       }
     } else {
@@ -511,6 +998,7 @@ const ChatScreen = () => {
         type: 'text',
         timestamp: getCurrentTimestamp(),
         isBot: false,
+        replyTo: isReply && replyPreview ? replyPreview : undefined,
       };
 
       // Add message to local state immediately for responsive UI
@@ -524,7 +1012,7 @@ const ChatScreen = () => {
 
       try {
         // Save to Supabase
-        await chatService.sendTextMessage(inputText);
+        await chatService.sendTextMessage(originalMessage);
         console.log('Text message saved to Supabase');
         
         // Generate AI response if AI mode is enabled
@@ -548,12 +1036,23 @@ const ChatScreen = () => {
           }, 100);
           
           try {
-            // Show extraction stats for debugging
-            const stats = chatService.getExtractionStats();
-            console.log('📊 Content extraction stats:', stats);
+            let aiResponse: string;
             
-            // Generate enhanced AI response with full database context
-            const aiResponse = await openAIService.generateResponseWithDatabaseContext(inputText);
+            if (isReply && replyPreview) {
+              // Generate focused response based on the specific message being replied to
+              console.log('🎯 Generating focused reply response for specific content...');
+              aiResponse = await generateFocusedReplyResponse(originalMessage, replyPreview);
+            } else {
+              // Show extraction stats for debugging
+              const stats = chatService.getExtractionStats();
+              console.log('📊 Content extraction stats:', stats);
+              
+              // Generate enhanced AI response with full database context
+              aiResponse = await openAIService.generateResponseWithDatabaseContext(originalMessage);
+            }
+            
+            // Get referenced content for the AI response
+            const referencedContent = await getReferencedContent(originalMessage);
             
             // Remove typing indicator and add actual response
             setMessages(prev => {
@@ -567,22 +1066,30 @@ const ChatScreen = () => {
                 type: 'text',
                 timestamp: getCurrentTimestamp(),
                 isBot: true,
+                referencedContent: referencedContent,
+                replyTo: isReply && replyPreview ? replyPreview : undefined,
               };
               
               return [...withoutTyping, aiMessage];
             });
             
             // Save AI response to database
-            await openAIService.sendAIResponse(inputText);
+            await openAIService.sendAIResponse(originalMessage);
+            
+            // Clear reply preview after successful response
+            setReplyPreview(null);
             
             // Scroll to show AI response
             setTimeout(() => {
               scrollViewRef.current?.scrollToEnd({ animated: true });
             }, 300);
             
-            console.log('🧠 Enhanced AI response with database context generated and saved');
+            console.log('🧠 AI response generated and saved');
           } catch (aiError) {
             console.error('Error generating AI response:', aiError);
+            
+            // Get referenced content for fallback message
+            const referencedContent = await getReferencedContent(originalMessage);
             
             // Remove typing indicator and show fallback message
             setMessages(prev => {
@@ -596,13 +1103,20 @@ const ChatScreen = () => {
                 type: 'text',
                 timestamp: getCurrentTimestamp(),
                 isBot: true,
+                referencedContent: referencedContent,
               };
               
               return [...withoutTyping, fallbackMessage];
             });
+            
+            // Clear reply preview on error too
+            setReplyPreview(null);
           } finally {
             setAiLoading(false);
           }
+        } else {
+          // Clear reply preview even if AI mode is off
+          setReplyPreview(null);
         }
       } catch (error) {
         console.error('Error saving text message:', error);
@@ -611,6 +1125,7 @@ const ChatScreen = () => {
         // Remove message from UI on error
         setMessages(prev => prev.filter(msg => msg.id !== localMessage.id));
         setAiLoading(false);
+        setReplyPreview(null);
       }
     }
   };
@@ -625,9 +1140,10 @@ const ChatScreen = () => {
       exif: false, // Don't include EXIF data
     });
 
-    if (!result.canceled && result.assets && result.assets[0]) {
-      try {
-        setUploading(true);
+          if (!result.canceled && result.assets && result.assets[0]) {
+        try {
+          setUploading(true);
+          setUploadingFileType('image');
         const asset = result.assets[0];
         
         // Generate a proper filename with the correct extension
@@ -643,7 +1159,7 @@ const ChatScreen = () => {
           height: asset.height
         });
         
-        // Create pending message for tagging
+        // Generate automatic tags for the image
         const newMessage: Partial<Message> = {
           id: generateUniqueId(),
           content: 'Image shared',
@@ -653,13 +1169,37 @@ const ChatScreen = () => {
           url: asset.uri,
         };
 
-        setPendingMessage(newMessage);
-        setShowTagModal(true);
-      } catch (error) {
-        console.error('Error processing image:', error);
-        Alert.alert('Error', 'Failed to process image');
-        setUploading(false);
-      }
+        // Save image - AI analysis will generate tags automatically
+        try {
+          const savedMessage = await chatService.sendImageMessage(asset.uri);
+          
+          // Create final message for UI using AI-generated tags
+          const finalMessage: Message = {
+            id: generateUniqueId(),
+            content: savedMessage?.content || 'Image shared',
+            type: 'image',
+            timestamp: savedMessage?.timestamp || getCurrentTimestamp(),
+            isBot: false,
+            url: asset.uri,
+            tags: savedMessage?.tags || [], // Use AI-generated tags from analysis
+          };
+          
+          setMessages(prev => [...prev, finalMessage]);
+          
+          // Auto-scroll to new content
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 300);
+          
+          console.log('Image uploaded with AI-generated tags:', savedMessage?.tags);
+        } catch (error) {
+          console.error('Error uploading image:', error);
+          Alert.alert('Error', 'Failed to upload image. Please try again.');
+        }
+              } catch (error) {
+          console.error('Error processing image:', error);
+          Alert.alert('Error', 'Failed to process image');
+        }
     }
   };
 
@@ -672,12 +1212,16 @@ const ChatScreen = () => {
 
       if (!result.canceled && result.assets && result.assets[0]) {
         setUploading(true);
+        // Determine file type based on filename
+        const filename = result.assets[0].name.toLowerCase();
+        const isPDF = filename.endsWith('.pdf');
+        setUploadingFileType(isPDF ? 'PDF' : 'document');
         const asset = result.assets[0];
 
-        // Create pending message for tagging
+        // Generate automatic tags for the document
         const newMessage: Partial<Message> = {
           id: generateUniqueId(),
-          content: 'Document shared',
+          content: asset.name, // Use filename instead of "Document shared"
           type: 'file',
           timestamp: getCurrentTimestamp(),
           isBot: false,
@@ -685,21 +1229,79 @@ const ChatScreen = () => {
           filename: asset.name,
         };
 
-        setPendingMessage(newMessage);
-        setShowTagModal(true);
+        // Generate automatic tags for document
+        const autoTags = generateTagSuggestions(newMessage);
+        
+        // Save document with automatic tags
+        try {
+          const savedMessage = await chatService.saveMessageWithContentExtraction(
+            asset.name, // Use filename instead of "Document shared"
+            'file',
+            {
+              fileUrl: asset.uri,
+              filename: asset.name,
+              fileType: asset.mimeType || 'application/octet-stream',
+              fileSize: asset.size || 0,
+              tags: autoTags
+            }
+          );
+          
+          // Create final message for UI
+          const finalMessage: Message = {
+            id: generateUniqueId(),
+            content: savedMessage?.content || asset.name, // Use filename instead of "Document shared"
+            type: 'file',
+            timestamp: savedMessage?.timestamp || getCurrentTimestamp(),
+            isBot: false,
+            url: asset.uri,
+            filename: asset.name,
+            file_size: asset.size || 0,
+            file_type: asset.mimeType || 'application/octet-stream',
+            tags: savedMessage?.tags || autoTags, // Use saved tags or fallback to generated ones
+          };
+          
+          setMessages(prev => [...prev, finalMessage]);
+          
+          // Auto-scroll to new content
+          setTimeout(() => {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }, 300);
+          
+          console.log('Document uploaded with tags:', savedMessage?.tags || autoTags);
+        } catch (error) {
+          console.error('Error uploading document:', error);
+          Alert.alert('Error', 'Failed to upload document. Please try again.');
+        } finally {
+          // Always reset uploading state when done
+          setUploading(false);
+          setUploadingFileType('');
+        }
       }
     } catch (error) {
+      console.error('Error picking document:', error);
       Alert.alert('Error', 'Failed to pick document');
+      // Reset uploading state on error
       setUploading(false);
+      setUploadingFileType('');
     }
   };
 
   // Tag management functions
   const addTag = (tag: string) => {
     const trimmedTag = tag.trim();
-    if (trimmedTag && !selectedTags.includes(trimmedTag)) {
-      setSelectedTags([...selectedTags, trimmedTag]);
-      setCurrentTagInput('');
+    if (trimmedTag && trimmedTag.length > 0) {
+      if (selectedTags.includes(trimmedTag)) {
+        // If tag is already selected, remove it (toggle behavior)
+        setSelectedTags(selectedTags.filter(t => t !== trimmedTag));
+        console.log('✅ Tag removed:', trimmedTag);
+      } else {
+        // Add the tag to selected tags (this will make it appear blue)
+        setSelectedTags([...selectedTags, trimmedTag]);
+        setCurrentTagInput('');
+        console.log('✅ Tag added:', trimmedTag);
+      }
+    } else {
+      console.log('❌ Tag not added:', trimmedTag, 'Reason: empty');
     }
   };
 
@@ -708,8 +1310,11 @@ const ChatScreen = () => {
   };
 
   const handleTagInputSubmit = () => {
+    console.log('🔄 Tag input submit triggered with:', currentTagInput);
     if (currentTagInput.trim()) {
       addTag(currentTagInput);
+    } else {
+      console.log('❌ Empty tag input, not adding');
     }
   };
 
@@ -719,71 +1324,228 @@ const ChatScreen = () => {
     setCurrentTagInput('');
     setPendingMessage(null);
     setUploading(false);
+    setUploadingFileType('');
+  };
+
+  const handleAddTagToMessage = async (message: Message) => {
+    // Toggle functionality: if clicking the same message, hide the sublist
+    if (currentMessageForTagging?.id === message.id && showTagSuggestions) {
+      setShowTagSuggestions(false);
+      setCurrentMessageForTagging(null);
+      return;
+    }
+    
+    // Set the current message for tagging
+    setCurrentMessageForTagging(message);
+    
+    // Generate comprehensive tag suggestions including AI tags
+    let suggestions: string[] = [];
+    
+    try {
+      if (message.type === 'link' && message.referencedContent) {
+        // For links, generate multiple AI suggestions to ensure we get variety
+        const contentToAnalyze = `${message.referencedContent.title || ''} ${message.referencedContent.description || ''}`.trim();
+        if (contentToAnalyze) {
+          const aiTags = await openAIService.generateMultipleTagSuggestions(contentToAnalyze, 3);
+          suggestions.push(...aiTags);
+        }
+        // Add contextual fallback suggestions
+        suggestions.push('Innovation', 'Technology', 'Research', 'Digital');
+      } else if (message.type === 'image') {
+        // For images, generate contextual suggestions
+        suggestions.push('Photography', 'Visual', 'Creative', 'Media', 'Design', 'Art');
+      } else if (message.type === 'file') {
+        // For files, use existing logic
+        suggestions = generateTagSuggestions(message);
+        // Add additional contextual suggestions
+        suggestions.push('Document', 'Reference', 'Archive', 'Important');
+      }
+      
+      // Remove duplicates and existing tags, limit to exactly 1 additional AI suggestion
+      const existingTags = message.tags || [];
+      const filteredSuggestions = suggestions
+        .filter(tag => !existingTags.some(existing => 
+          existing.toLowerCase().trim() === tag.toLowerCase().trim()
+        ))
+        .slice(0, 1); // Limit to exactly 1 additional AI suggestion for inline
+      
+      // Ensure we have at least 1 suggestion, add fallback if needed
+      if (filteredSuggestions.length === 0) {
+        const fallbackTags = ['Innovation', 'Technology', 'Important', 'Research'];
+        const fallbackTag = fallbackTags.find(tag => 
+          !existingTags.some(existing => existing.toLowerCase().trim() === tag.toLowerCase().trim())
+        );
+        if (fallbackTag) {
+          filteredSuggestions.push(fallbackTag);
+        }
+      }
+      
+      console.log('🏷️ Inline suggestions generated:', {
+        allSuggestions: suggestions,
+        existingTags: existingTags,
+        filteredSuggestions: filteredSuggestions
+      });
+      
+      setSuggestedTags(filteredSuggestions);
+    } catch (error) {
+      console.warn('Failed to generate AI suggestions, using fallback:', error);
+      suggestions = generateTagSuggestions(message);
+      const fallbackFiltered = suggestions.slice(0, 1);
+      console.log('🏷️ Using fallback suggestions:', fallbackFiltered);
+      setSuggestedTags(fallbackFiltered); // Limit to exactly 1 for inline consistency
+    }
+    
+    // Show tag suggestions
+    setShowTagSuggestions(true);
+  };
+
+  const handleTagSuggestionSelect = async (tag: string) => {
+    if (!currentMessageForTagging) return;
+    
+    // Add the selected tag to the message
+    const updatedTags = [...(currentMessageForTagging.tags || []), tag];
+    
+    // Update the message in the local state
+    setMessages(prevMessages => 
+      prevMessages.map(msg => 
+        msg.id === currentMessageForTagging.id 
+          ? { ...msg, tags: updatedTags }
+          : msg
+      )
+    );
+    
+    // Hide the tag suggestions
+    setShowTagSuggestions(false);
+    setCurrentMessageForTagging(null);
+    
+    // Show visual feedback for successful tag addition
+    console.log('✅ Tag added successfully:', tag);
+    console.log('📋 Message now has tags:', updatedTags);
+    
+    // TODO: Update the message in the database
+    console.log('Added tag to message:', tag);
+  };
+
+  const handleCustomTagClick = async () => {
+    if (!currentMessageForTagging) return;
+    
+    // Set up the tag modal with the current message
+    setPendingMessage(currentMessageForTagging);
+    setSelectedTags(currentMessageForTagging.tags || []);
+    
+    // Generate exactly 2 AI suggestions for the modal
+    let modalSuggestions: string[] = [];
+    
+    try {
+      // Generate 2 AI tags based on content, including both existing and new
+      if (currentMessageForTagging.type === 'link' && currentMessageForTagging.referencedContent) {
+        const contentToAnalyze = `${currentMessageForTagging.referencedContent.title || ''} ${currentMessageForTagging.referencedContent.description || ''}`.trim();
+        if (contentToAnalyze) {
+          const aiTags = await openAIService.generateMultipleTagSuggestions(contentToAnalyze, 3);
+          
+          // Include the existing AI tag if it exists
+          const existingAITag = currentMessageForTagging.tags?.[0];
+          if (existingAITag) {
+            modalSuggestions.push(existingAITag);
+          }
+          
+          // Add additional AI tags that are different from existing
+          const newAITags = aiTags.filter(tag => tag !== existingAITag);
+          modalSuggestions.push(...newAITags);
+        }
+      } else if (currentMessageForTagging.type === 'image') {
+        // For images, include existing + generate new contextual tags
+        const existingAITag = currentMessageForTagging.tags?.[0];
+        if (existingAITag) {
+          modalSuggestions.push(existingAITag);
+        }
+        const imageTags = ['Visual', 'Creative', 'Photography', 'Media', 'Art', 'Design'];
+        const newImageTags = imageTags.filter(tag => tag !== existingAITag);
+        modalSuggestions.push(...newImageTags.slice(0, 2));
+      } else if (currentMessageForTagging.type === 'file') {
+        // For files, include existing + generate new contextual tags
+        const existingAITag = currentMessageForTagging.tags?.[0];
+        if (existingAITag) {
+          modalSuggestions.push(existingAITag);
+        }
+        const fileTags = generateTagSuggestions(currentMessageForTagging);
+        const newFileTags = fileTags.filter(tag => tag !== existingAITag);
+        modalSuggestions.push(...newFileTags.slice(0, 2));
+      }
+      
+      // Ensure we have exactly 2 unique suggestions
+      const uniqueSuggestions = [...new Set(modalSuggestions)].slice(0, 2);
+      
+      // If we still don't have 2 suggestions, add fallback
+      if (uniqueSuggestions.length < 2) {
+        const fallbackTags = ['Technology', 'Innovation', 'Research', 'Important'];
+        const existingAITag = currentMessageForTagging.tags?.[0];
+        const additionalTags = fallbackTags.filter(tag => 
+          tag !== existingAITag && !uniqueSuggestions.includes(tag)
+        );
+        uniqueSuggestions.push(...additionalTags.slice(0, 2 - uniqueSuggestions.length));
+      }
+      
+      setSuggestedTags(uniqueSuggestions.slice(0, 2));
+    } catch (error) {
+      console.warn('Failed to generate modal suggestions:', error);
+      // Fallback: use existing tag + one contextual suggestion
+      const existingTag = currentMessageForTagging.tags?.[0];
+      const fallbackSuggestions = existingTag ? [existingTag, 'Technology'] : ['Technology', 'Important'];
+      setSuggestedTags(fallbackSuggestions.slice(0, 2));
+    }
+    
+    // Hide tag suggestions and show the modal
+    setShowTagSuggestions(false);
+    setShowTagModal(true);
   };
 
   const finalizePendingMessage = async () => {
     if (!pendingMessage) return;
 
     try {
-      let savedMessage: any = null;
-
-      // Save to Supabase with content extraction and get the database message
-      if (pendingMessage.type === 'image' && pendingMessage.url) {
-        savedMessage = await chatService.sendImageMessage(pendingMessage.url, selectedTags);
-        console.log('Image message saved to Supabase');
-      } else if (pendingMessage.type === 'file' && pendingMessage.url && pendingMessage.filename) {
-        // Get file size and type from the original asset
-        const fileInfo = await fetch(pendingMessage.url);
-        const blob = await fileInfo.blob();
+      // Check if this is an existing message (has an id that's not a generated one)
+      const isExistingMessage = pendingMessage.id && typeof pendingMessage.id === 'number' && pendingMessage.id > 1000;
+      
+      if (isExistingMessage) {
+        // Update existing message tags in the database
+        console.log('🏷️ Updating tags for existing message:', { tags: selectedTags });
         
-        // Use new content extraction method for files
-        savedMessage = await chatService.saveMessageWithContentExtraction(
-          pendingMessage.content || 'Document shared',
-          'file',
-          {
-            fileUrl: pendingMessage.url,
-            filename: pendingMessage.filename,
-            fileType: blob.type || 'application/octet-stream',
-            fileSize: blob.size,
-            tags: selectedTags
-          }
+        // Find the corresponding database message to get the correct UUID
+        const dbMessages = await chatService.getUserMessages();
+        const dbMessage = dbMessages.find(msg => 
+          msg.content === pendingMessage.content && 
+          msg.type === pendingMessage.type &&
+          msg.file_url === pendingMessage.url
         );
-        console.log('📄 File message saved with content extraction');
-      } else if (pendingMessage.type === 'link' && pendingMessage.url && pendingMessage.content) {
-        // Use enhanced link message method with content extraction
-        savedMessage = await chatService.sendLinkMessage(
-          pendingMessage.content || 'Link shared',
-          pendingMessage.url,
-          pendingMessage.linkPreview,
-          selectedTags
-        );
-        console.log('🔗 Link message saved with content extraction');
+
+        if (dbMessage) {
+          await chatService.updateMessageTags(
+            dbMessage.id, // Use the database UUID instead of local ID
+            selectedTags
+          );
+        } else {
+          console.error('❌ Could not find database message for local message:', pendingMessage.id);
+          Alert.alert('Error', 'Could not find the message in the database. Please try again.');
+          return;
+        }
+        
+        // Update the message in the UI
+        setMessages(prev => prev.map(msg => 
+          msg.id === pendingMessage.id 
+            ? { ...msg, tags: selectedTags }
+            : msg
+        ));
+        
+        console.log('✅ Message tags updated successfully!');
+        console.log(`📋 Final tags (${selectedTags.length}):`, selectedTags);
+      } else {
+        // This should not happen with the new flow, but keeping for safety
+        console.log('Unexpected: finalizePendingMessage called for new message');
       }
-
-      // Create final message for UI using database data
-      const finalMessage: Message = {
-        id: generateUniqueId(), // Still need unique ID for React keys
-        content: savedMessage?.content || pendingMessage.content || '',
-        type: (pendingMessage.type as 'text' | 'image' | 'file' | 'link') || 'text',
-        timestamp: savedMessage?.timestamp || getCurrentTimestamp(),
-        isBot: false,
-        url: pendingMessage.url,
-        filename: pendingMessage.filename,
-        tags: selectedTags.length > 0 ? selectedTags : undefined,
-        linkPreview: pendingMessage.linkPreview,
-      };
-      
-      setMessages(prev => [...prev, finalMessage]);
-      
-      // Auto-scroll to new content
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 300);
-
-      console.log('Message uploaded and saved successfully');
     } catch (error) {
-      console.error('Error uploading message:', error);
-      Alert.alert('Error', 'Failed to upload. Please check your connection and try again.');
+      console.error('Error updating message tags:', error);
+      Alert.alert('Error', 'Failed to update tags. Please try again.');
     }
     
     // Reset modal state
@@ -792,6 +1554,7 @@ const ChatScreen = () => {
     setCurrentTagInput('');
     setPendingMessage(null);
     setUploading(false);
+    setUploadingFileType('');
   };
 
   // Handle long press on message to show context menu
@@ -821,7 +1584,7 @@ const ChatScreen = () => {
     if (!contextMenuMessage) return;
     
     try {
-      // Find the corresponding database message and add a "starred" tag
+      // Find the corresponding database message
       const dbMessages = await chatService.getUserMessages();
       const dbMessage = dbMessages.find(msg => 
         msg.content === contextMenuMessage.content && 
@@ -830,20 +1593,33 @@ const ChatScreen = () => {
       );
 
       if (dbMessage) {
-        // Add "starred" tag to the message
-        const currentTags = dbMessage.tags || [];
-        if (!currentTags.includes('starred')) {
-          const updatedTags = [...currentTags, 'starred'];
-          // Update the message with new tags (you'll need to implement this in ChatService)
-          console.log('⭐ Message starred:', dbMessage.id);
-          Alert.alert('Success', 'Message starred!');
-        } else {
-          Alert.alert('Info', 'Message is already starred');
-        }
+        // Check if message is currently starred
+        const isCurrentlyStarred = contextMenuMessage.tags?.includes('starred') || false;
+        
+        // Toggle starred status
+        await chatService.updateMessageStarred(dbMessage.id, !isCurrentlyStarred);
+        
+        // Update local message state to reflect the change
+        setMessages(prevMessages => 
+          prevMessages.map(msg => {
+            if (msg.id === contextMenuMessage.id) {
+              const currentTags = msg.tags || [];
+              if (isCurrentlyStarred) {
+                // Remove 'starred' tag
+                return { ...msg, tags: currentTags.filter(tag => tag !== 'starred') };
+              } else {
+                // Add 'starred' tag
+                return { ...msg, tags: [...currentTags, 'starred'] };
+              }
+            }
+            return msg;
+          })
+        );
+        
+        console.log(`⭐ Message ${isCurrentlyStarred ? 'unstarred' : 'starred'}:`, dbMessage.id);
       }
     } catch (error) {
-      console.error('Error starring message:', error);
-      Alert.alert('Error', 'Failed to star message');
+      console.error('Error toggling star status:', error);
     }
     
     setShowContextMenu(false);
@@ -977,6 +1753,18 @@ const ChatScreen = () => {
   const handleSelectionAddTag = () => {
     if (selectedMessages.size === 0) return;
     
+    // Get the first selected message to generate suggestions from
+    const firstSelectedId = Array.from(selectedMessages)[0];
+    const firstSelectedMessage = messages.find(m => m.id === firstSelectedId);
+    
+    if (firstSelectedMessage) {
+      // Generate smart tag suggestions based on the first selected message
+      const suggestions = generateTagSuggestions(firstSelectedMessage);
+      setSuggestedTags(suggestions);
+    } else {
+      setSuggestedTags([]);
+    }
+    
     // Show tag modal for selected messages
     setShowTagModal(true);
   };
@@ -1087,29 +1875,271 @@ const ChatScreen = () => {
           text: 'Clear All', 
           style: 'destructive',
           onPress: async () => {
+            setClearingMessages(true);
+            setDeletingProgress(0);
+            setDeletingText('Preparing to delete...');
+            
+            // Start spinning animation
+            Animated.loop(
+              Animated.timing(deleteSpinValue, {
+                toValue: 1,
+                duration: 1000,
+                easing: Easing.linear,
+                useNativeDriver: true,
+              })
+            ).start();
+            
             try {
               const dbMessages = await chatService.getUserMessages();
+              const totalMessages = dbMessages.length;
               
-              // Delete all messages from database
-              for (const msg of dbMessages) {
-                await chatService.deleteMessage(msg.id);
+              if (totalMessages === 0) {
+                setDeletingText('No messages to delete');
+                setTimeout(() => {
+                  setClearingMessages(false);
+                  Alert.alert('Info', 'No messages to delete');
+                }, 1000);
+                return;
               }
+              
+              // Delete all messages from database with progress tracking
+              for (let i = 0; i < dbMessages.length; i++) {
+                const msg = dbMessages[i];
+                const progressPercentage = ((i + 1) / totalMessages) * 100;
+                
+                setDeletingText(`Deleting message ${i + 1} of ${totalMessages}...`);
+                setDeletingProgress(progressPercentage);
+                
+                await chatService.deleteMessage(msg.id);
+                
+                // Small delay to show progress animation
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
+              
+              setDeletingText('Finishing up...');
+              setDeletingProgress(100);
               
               // Clear local state
               setMessages([]);
               
-              // Show welcome messages again
+              // Small delay before hiding overlay
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+              setClearingMessages(false);
+              
+              // Stop spinning animation
+              deleteSpinValue.stopAnimation();
+              deleteSpinValue.setValue(0);
+              
+              // Reset global flag and show welcome messages again
+              globalWelcomeMessagesShown = false;
               showMessagesSequentially();
               
               Alert.alert('Success', 'All messages cleared successfully');
             } catch (error) {
               console.error('Error clearing messages:', error);
+              setClearingMessages(false);
+              setDeletingProgress(0);
+              
+              // Stop spinning animation on error
+              deleteSpinValue.stopAnimation();
+              deleteSpinValue.setValue(0);
+              
               Alert.alert('Error', 'Failed to clear messages. Please try again.');
             }
           }
         }
       ]
     );
+  };
+
+  // Get referenced content from database based on query
+  const getReferencedContent = async (query: string) => {
+    try {
+      // Get all user messages from database
+      const dbMessages = await chatService.getUserMessages();
+      
+      console.log('🔍 Total messages in database:', dbMessages.length);
+      console.log('🔍 Query:', query);
+      
+      // Extract keywords from query for matching
+      const keywords = query.toLowerCase().split(' ').filter(word => word.length > 3);
+      console.log('🔍 Keywords:', keywords);
+      
+      // Find most relevant content based on query
+      const relevantMessages = dbMessages.filter(msg => {
+        if (!msg.extracted_text && !msg.extracted_title) return false;
+        
+        const searchText = (
+          (msg.extracted_text || '') + ' ' + 
+          (msg.extracted_title || '') + ' ' + 
+          (msg.content || '')
+        ).toLowerCase();
+        
+        return keywords.some(keyword => searchText.includes(keyword));
+      });
+      
+      console.log('🔍 Relevant messages found:', relevantMessages.length);
+      
+      // Sort by relevance and recency
+      const sortedMessages = relevantMessages.sort((a, b) => {
+        const aDate = new Date(a.created_at).getTime();
+        const bDate = new Date(b.created_at).getTime();
+        return bDate - aDate; // Most recent first
+      });
+      
+      // Get the most relevant message
+      const mostRelevant = sortedMessages[0];
+      
+      if (mostRelevant) {
+        let imageUrl: string | undefined;
+        
+        // Get appropriate image based on content type
+        if (mostRelevant.type === 'link' && mostRelevant.file_url) {
+          // For links, try to get the actual preview image
+          try {
+            const LinkPreviewService = await import('../services/link-preview');
+            const linkPreviewService = LinkPreviewService.default.getInstance();
+            const previewData = await linkPreviewService.generatePreview(mostRelevant.file_url);
+            imageUrl = previewData.image;
+          } catch (error) {
+            console.log('Failed to get link preview image, using fallback');
+            imageUrl = generatePreviewImage('article', new URL(mostRelevant.file_url).hostname);
+          }
+        } else if (mostRelevant.type === 'image' && mostRelevant.file_url) {
+          // For images, use the actual image URL
+          imageUrl = mostRelevant.file_url;
+        } else if (mostRelevant.type === 'file' && mostRelevant.filename) {
+          // For files, generate a document preview
+          const fileExt = mostRelevant.filename.split('.').pop()?.toLowerCase() || 'document';
+          const domain = 'Document';
+          imageUrl = generatePreviewImage('document', domain);
+        } else {
+          // Fallback for other types
+          imageUrl = generatePreviewImage('other', 'Content');
+        }
+        
+        // Create a better title based on available data
+        console.log('🔍 Referenced content data:', {
+          extracted_title: mostRelevant.extracted_title,
+          filename: mostRelevant.filename,
+          content: mostRelevant.content?.substring(0, 100),
+          type: mostRelevant.type,
+          extracted_text: mostRelevant.extracted_text?.substring(0, 100)
+        });
+        
+        let title = mostRelevant.extracted_title;
+        if (!title && mostRelevant.filename) {
+          // Remove file extension for cleaner display
+          title = mostRelevant.filename.replace(/\.[^/.]+$/, '');
+        }
+        if (!title && mostRelevant.content) {
+          // Use first line of content as title
+          title = mostRelevant.content.split('\n')[0].substring(0, 50);
+        }
+        if (!title && mostRelevant.extracted_text) {
+          // Use first line of extracted text as title
+          title = mostRelevant.extracted_text.split('\n')[0].substring(0, 50);
+        }
+        if (!title) {
+          title = mostRelevant.type === 'file' ? 'Document' :
+                 mostRelevant.type === 'image' ? 'Image' :
+                 mostRelevant.type === 'link' ? 'Web Page' : 'Content';
+        }
+        
+        console.log('📝 Final title:', title);
+        
+        return {
+          title: cleanDisplayTitle(title),
+          description: mostRelevant.extracted_excerpt || mostRelevant.extracted_text?.substring(0, 150) || 'Content from your saved items',
+          image: imageUrl,
+          domain: mostRelevant.type === 'link' && mostRelevant.file_url ? new URL(mostRelevant.file_url).hostname : 
+                 mostRelevant.type === 'file' ? 'Document' :
+                 mostRelevant.type === 'image' ? 'Image' : 'Saved Content',
+          url: mostRelevant.file_url || undefined,
+        };
+      }
+      
+      // Fallback: return most recent content if no keyword match
+      const recentContent = dbMessages
+        .filter(msg => msg.extracted_text || msg.extracted_title)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 1)[0];
+      
+      if (recentContent) {
+        let imageUrl: string | undefined;
+        
+        // Get appropriate image based on content type
+        if (recentContent.type === 'link' && recentContent.file_url) {
+          // For links, try to get the actual preview image
+          try {
+            const LinkPreviewService = await import('../services/link-preview');
+            const linkPreviewService = LinkPreviewService.default.getInstance();
+            const previewData = await linkPreviewService.generatePreview(recentContent.file_url);
+            imageUrl = previewData.image;
+          } catch (error) {
+            console.log('Failed to get link preview image, using fallback');
+            imageUrl = generatePreviewImage('article', new URL(recentContent.file_url).hostname);
+          }
+        } else if (recentContent.type === 'image' && recentContent.file_url) {
+          // For images, use the actual image URL
+          imageUrl = recentContent.file_url;
+        } else if (recentContent.type === 'file' && recentContent.filename) {
+          // For files, generate a document preview
+          const fileExt = recentContent.filename.split('.').pop()?.toLowerCase() || 'document';
+          const domain = 'Document';
+          imageUrl = generatePreviewImage('document', domain);
+        } else {
+          // Fallback for other types
+          imageUrl = generatePreviewImage('other', 'Content');
+        }
+        
+        // Create a better title based on available data
+        console.log('🔍 Fallback referenced content data:', {
+          extracted_title: recentContent.extracted_title,
+          filename: recentContent.filename,
+          content: recentContent.content?.substring(0, 100),
+          type: recentContent.type,
+          extracted_text: recentContent.extracted_text?.substring(0, 100)
+        });
+        
+        let title = recentContent.extracted_title;
+        if (!title && recentContent.filename) {
+          // Remove file extension for cleaner display
+          title = recentContent.filename.replace(/\.[^/.]+$/, '');
+        }
+        if (!title && recentContent.content) {
+          // Use first line of content as title
+          title = recentContent.content.split('\n')[0].substring(0, 50);
+        }
+        if (!title && recentContent.extracted_text) {
+          // Use first line of extracted text as title
+          title = recentContent.extracted_text.split('\n')[0].substring(0, 50);
+        }
+        if (!title) {
+          title = recentContent.type === 'file' ? 'Document' :
+                 recentContent.type === 'image' ? 'Image' :
+                 recentContent.type === 'link' ? 'Web Page' : 'Content';
+        }
+        
+        console.log('📝 Fallback final title:', title);
+        
+        return {
+          title: title,
+          description: recentContent.extracted_excerpt || recentContent.extracted_text?.substring(0, 150) || 'Content from your saved items',
+          image: imageUrl,
+          domain: recentContent.type === 'link' && recentContent.file_url ? new URL(recentContent.file_url).hostname : 
+                 recentContent.type === 'file' ? 'Document' :
+                 recentContent.type === 'image' ? 'Image' : 'Saved Content',
+          url: recentContent.file_url || undefined,
+        };
+      }
+      
+      return undefined;
+    } catch (error) {
+      console.error('Error getting referenced content:', error);
+      return undefined;
+    }
   };
 
   // Ask AI about saved content with full database integration
@@ -1119,6 +2149,9 @@ const ChatScreen = () => {
       // Use enhanced database-integrated content analysis
       const response = await openAIService.generateResponseWithDatabaseContext(query);
       
+      // Get referenced content from the database
+      const referencedContent = await getReferencedContent(query);
+      
       // Create AI response message
       const aiMessage: Message = {
         id: generateUniqueId(),
@@ -1126,6 +2159,7 @@ const ChatScreen = () => {
         type: 'text',
         timestamp: getCurrentTimestamp(),
         isBot: true,
+        referencedContent: referencedContent,
       };
       
       // Add to UI
@@ -1172,6 +2206,627 @@ const ChatScreen = () => {
     }
   };
 
+  // Update file sizes for existing messages
+  const updateFileSizes = async () => {
+    try {
+      Alert.alert(
+        'Update File Sizes',
+        'This will update file sizes for existing documents. This may take a few minutes.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Update', 
+            onPress: async () => {
+              try {
+                // Get all messages from database
+                const dbMessages = await chatService.getUserMessages();
+                const fileMessages = dbMessages.filter(msg => msg.type === 'file' && (!msg.file_size || msg.file_size === 0));
+                
+                if (fileMessages.length === 0) {
+                  Alert.alert('Info', 'No messages need file size updates.');
+                  return;
+                }
+                
+                console.log(`📄 Found ${fileMessages.length} messages that need file size updates`);
+                
+                // For now, we'll just reload messages to get updated data
+                // In the future, we could implement actual file size calculation
+                await loadMessages();
+                Alert.alert('Success', `Updated ${fileMessages.length} file messages.`);
+              } catch (error) {
+                console.error('Error updating file sizes:', error);
+                Alert.alert('Error', 'Failed to update file sizes. Please try again.');
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      console.error('Error in update file sizes:', error);
+    }
+  };
+
+
+
+  // Get emoji for tag - comprehensive emoji mapping
+  const getEmojiForTag = (tag: string): string => {
+    const t = (tag || '').toLowerCase().trim();
+    
+    // Comprehensive emoji mappings
+    const mapping: Record<string, string> = {
+      // Technology & AI
+      'artificial intelligence': '🤖', 'ai': '🤖', 'machine learning': '🧠', 'web development': '💻',
+      'technology': '💻', 'tech': '💻', 'software': '💻', 'programming': '👨‍💻',
+      'innovation': '💡', 'innovative': '💡', 'startup': '🚀', 'digital': '📱',
+      'automation': '⚙️', 'robotics': '🤖', 'coding': '💻', 'algorithm': '🔢',
+      
+      // Business & Finance
+      'business': '📈', 'finance': '💰', 'investment': '📊', 'marketing': '📢',
+      'startup': '🚀', 'entrepreneurship': '🚀', 'venture capital': '💰',
+      
+      // Education & Learning
+      'education': '🎓', 'learning': '📚', 'tutorial': '📖', 'guide': '📋',
+      'research': '🔬', 'study': '📝', 'course': '🎓',
+      
+      // News & Current Events
+      'news': '📰', 'current events': '📰', 'politics': '🏛️', 'breaking news': '📰',
+      
+      // Health & Wellness
+      'health': '🩺', 'fitness': '💪', 'nutrition': '🥗', 'wellness': '🌱',
+      
+      // Creative & Entertainment
+      'art': '🎨', 'music': '🎵', 'entertainment': '🎭', 'gaming': '🎮',
+      'photography': '📸', 'design': '🎨', 'creative': '🎨',
+      
+      // Lifestyle
+      'travel': '✈️', 'food': '🍽️', 'cooking': '👨‍🍳', 'recipes': '🍳',
+      'fashion': '👗', 'home': '🏠', 'lifestyle': '🌟',
+      
+      // Professional
+      'career': '💼', 'job': '💼', 'workplace': '🏢', 'productivity': '⚡',
+      
+      // Content types
+      'review': '⭐', 'analysis': '📊', 'opinion': '💭', 'tutorial': '📖',
+      'tips': '💡', 'advice': '💡', 'how to': '🔧'
+    };
+    
+    // Direct match
+    if (mapping[t]) return mapping[t];
+    
+    // Pattern matching for common cases
+    if (t.includes('ai') || t.includes('artificial')) return '🤖';
+    if (t.includes('tech') || t.includes('software')) return '💻';
+    if (t.includes('business') || t.includes('finance')) return '💰';
+    if (t.includes('health') || t.includes('medical')) return '🩺';
+    if (t.includes('education') || t.includes('learn')) return '🎓';
+    if (t.includes('news') || t.includes('article')) return '📰';
+    if (t.includes('travel') || t.includes('trip')) return '✈️';
+    if (t.includes('food') || t.includes('recipe')) return '🍽️';
+    if (t.includes('review') || t.includes('opinion')) return '⭐';
+    
+    return '';
+  };
+
+  // Generate smart tag suggestions based on content
+  const generateTagSuggestions = (message: Partial<Message>): string[] => {
+    if (!message) return [];
+    
+    const suggestions: string[] = [];
+    
+    if (message.type === 'image') {
+      // For images, use AI-generated tags from the analysis
+      // These will be provided by the FastImageAnalyzer in sendImageMessage
+      // For now, return basic tags that will be replaced by AI analysis
+      return ['AI Analysis...'];
+    } else if (message.type === 'file') {
+      const filename = message.filename?.toLowerCase() || '';
+      
+      // Extract meaningful keywords from filename
+      const filenameWords = filename
+        .replace(/\.[^/.]+$/, '') // Remove extension
+        .split(/[-_\s]+/) // Split on dashes, underscores, spaces
+        .filter(word => word.length > 2) // Only words longer than 2 chars
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1)); // Capitalize
+
+      suggestions.push(...filenameWords.slice(0, 3));
+      
+      // Add content-specific suggestions based on filename patterns
+      if (filename.includes('invoice') || filename.includes('receipt') || filename.includes('bill')) {
+        suggestions.push('Finance', 'Expenses');
+      } else if (filename.includes('resume') || filename.includes('cv')) {
+        suggestions.push('Career', 'JobSearch');
+      } else if (filename.includes('recipe') || filename.includes('cooking')) {
+        suggestions.push('Cooking', 'Recipes');
+      } else if (filename.includes('manual') || filename.includes('guide')) {
+        suggestions.push('Reference', 'Instructions');
+      } else if (filename.includes('contract') || filename.includes('agreement')) {
+        suggestions.push('Legal', 'Contracts');
+      } else if (filename.includes('presentation') || filename.includes('slides')) {
+        suggestions.push('Business', 'Presentation');
+      } else if (filename.includes('report') || filename.includes('analysis')) {
+        suggestions.push('Business', 'Report');
+      } else if (filename.includes('photo') || filename.includes('image')) {
+        suggestions.push('Photography', 'Visual');
+      } else if (filename.includes('tax') || filename.includes('irs')) {
+        suggestions.push('Tax', 'Finance');
+      } else if (filename.includes('insurance') || filename.includes('policy')) {
+        suggestions.push('Insurance', 'Legal');
+      } else if (filename.includes('medical') || filename.includes('health')) {
+        suggestions.push('Medical', 'Health');
+      } else if (filename.includes('school') || filename.includes('education')) {
+        suggestions.push('Education', 'Academic');
+      } else if (filename.includes('travel') || filename.includes('trip')) {
+        suggestions.push('Travel', 'Vacation');
+      } else if (filename.includes('bank') || filename.includes('statement')) {
+        suggestions.push('Banking', 'Finance');
+      } else if (filename.includes('certificate') || filename.includes('diploma')) {
+        suggestions.push('Certificate', 'Achievement');
+      } else if (filename.includes('budget') || filename.includes('financial')) {
+        suggestions.push('Budget', 'Finance');
+      }
+    } else if (message.type === 'link') {
+      // Generate content-specific tags from actual article content
+      if (message.linkPreview) {
+        const { title, description, domain } = message.linkPreview;
+        const combinedText = `${title || ''} ${description || ''}`;
+        
+        // Extract intelligent, content-specific keywords
+        const contentKeywords = extractIntelligentKeywords(combinedText);
+        suggestions.push(...contentKeywords);
+        
+        // Add industry/topic-specific tags based on content analysis
+        const topicTags = analyzeContentForTopics(combinedText);
+        suggestions.push(...topicTags);
+        
+        // Add platform-specific context that's meaningful
+        if (domain) {
+          const platformContext = getPlatformSpecificTags(domain, title || '');
+          suggestions.push(...platformContext);
+        }
+        
+        // Add content type tags based on domain and title
+        const contentTypeTags = getContentTypeTags(domain, title, description);
+        suggestions.push(...contentTypeTags);
+      } else {
+        // Fallback: extract from URL structure
+        const url = message.url || '';
+        const urlKeywords = extractUrlKeywords(url);
+        suggestions.push(...urlKeywords);
+      }
+    }
+    
+    // Advanced filtering and ranking - return only 1 tag for autogenerated content
+    const filteredSuggestions = filterAndRankSuggestions(suggestions);
+    return filteredSuggestions.slice(0, 1); // Limit to 1 autogenerated tag
+  };
+
+  // Get content type tags based on domain and content
+  const getContentTypeTags = (domain?: string, title?: string, description?: string): string[] => {
+    const tags: string[] = [];
+    const lowerTitle = (title || '').toLowerCase();
+    const lowerDescription = (description || '').toLowerCase();
+    const lowerDomain = (domain || '').toLowerCase();
+    
+    // News and media
+    if (lowerDomain.includes('news') || lowerTitle.includes('news') || lowerDescription.includes('news')) {
+      tags.push('News', 'Current Events');
+    }
+    
+    // Technology
+    if (lowerDomain.includes('tech') || lowerTitle.includes('technology') || lowerTitle.includes('software') || 
+        lowerTitle.includes('app') || lowerTitle.includes('digital')) {
+      tags.push('Technology', 'Digital');
+    }
+    
+    // Business and finance
+    if (lowerDomain.includes('business') || lowerDomain.includes('finance') || lowerTitle.includes('business') || 
+        lowerTitle.includes('finance') || lowerTitle.includes('investment')) {
+      tags.push('Business', 'Finance');
+    }
+    
+    // Education and learning
+    if (lowerDomain.includes('edu') || lowerDomain.includes('course') || lowerTitle.includes('learn') || 
+        lowerTitle.includes('tutorial') || lowerTitle.includes('guide')) {
+      tags.push('Education', 'Learning');
+    }
+    
+    // Health and wellness
+    if (lowerTitle.includes('health') || lowerTitle.includes('medical') || lowerTitle.includes('fitness') || 
+        lowerTitle.includes('wellness')) {
+      tags.push('Health', 'Wellness');
+    }
+    
+    // Entertainment
+    if (lowerTitle.includes('movie') || lowerTitle.includes('film') || lowerTitle.includes('music') || 
+        lowerTitle.includes('game') || lowerTitle.includes('entertainment')) {
+      tags.push('Entertainment');
+    }
+    
+    // Travel
+    if (lowerTitle.includes('travel') || lowerTitle.includes('trip') || lowerTitle.includes('vacation') || 
+        lowerTitle.includes('destination')) {
+      tags.push('Travel');
+    }
+    
+    // Food and cooking
+    if (lowerTitle.includes('recipe') || lowerTitle.includes('food') || lowerTitle.includes('cooking') || 
+        lowerTitle.includes('restaurant')) {
+      tags.push('Food', 'Cooking');
+    }
+    
+    return tags;
+  };
+
+  // Extract intelligent, content-specific keywords
+  const extractIntelligentKeywords = (text: string): string[] => {
+    if (!text) return [];
+    
+    // Remove common articles, prepositions, and generic words
+    const stopWords = new Set([
+      'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+      'how', 'what', 'when', 'where', 'why', 'this', 'that', 'these', 'those',
+      'from', 'into', 'about', 'also', 'can', 'will', 'would', 'could', 'should',
+      'may', 'might', 'must', 'shall', 'have', 'has', 'had', 'been', 'being',
+      'was', 'were', 'are', 'is', 'am', 'get', 'got', 'getting', 'gets',
+      'make', 'makes', 'making', 'made', 'take', 'takes', 'taking', 'took',
+      'come', 'comes', 'coming', 'came', 'go', 'goes', 'going', 'went',
+      'see', 'sees', 'seeing', 'saw', 'look', 'looks', 'looking', 'looked',
+      'use', 'uses', 'using', 'used', 'find', 'finds', 'finding', 'found',
+      'give', 'gives', 'giving', 'gave', 'tell', 'tells', 'telling', 'told',
+      'work', 'works', 'working', 'worked', 'call', 'calls', 'calling', 'called',
+      'try', 'tries', 'trying', 'tried', 'ask', 'asks', 'asking', 'asked',
+      'need', 'needs', 'needing', 'needed', 'feel', 'feels', 'feeling', 'felt',
+      'seem', 'seems', 'seeming', 'seemed', 'leave', 'leaves', 'leaving', 'left',
+      'put', 'puts', 'putting', 'keep', 'keeps', 'keeping', 'kept',
+      'let', 'lets', 'letting', 'run', 'runs', 'running', 'ran',
+      'move', 'moves', 'moving', 'moved', 'live', 'lives', 'living', 'lived',
+      'believe', 'believes', 'believing', 'believed', 'bring', 'brings', 'bringing', 'brought',
+      'happen', 'happens', 'happening', 'happened', 'write', 'writes', 'writing', 'wrote',
+      'provide', 'provides', 'providing', 'provided', 'sit', 'sits', 'sitting', 'sat',
+      'stand', 'stands', 'standing', 'stood', 'lose', 'loses', 'losing', 'lost',
+      'pay', 'pays', 'paying', 'paid', 'meet', 'meets', 'meeting', 'met',
+      'include', 'includes', 'including', 'included', 'continue', 'continues', 'continuing', 'continued',
+      'set', 'sets', 'setting', 'follow', 'follows', 'following', 'followed',
+      'stop', 'stops', 'stopping', 'stopped', 'create', 'creates', 'creating', 'created',
+      'speak', 'speaks', 'speaking', 'spoke', 'read', 'reads', 'reading',
+      'allow', 'allows', 'allowing', 'allowed', 'add', 'adds', 'adding', 'added',
+      'spend', 'spends', 'spending', 'spent', 'grow', 'grows', 'growing', 'grew',
+      'open', 'opens', 'opening', 'opened', 'walk', 'walks', 'walking', 'walked',
+      'win', 'wins', 'winning', 'won', 'offer', 'offers', 'offering', 'offered',
+      'remember', 'remembers', 'remembering', 'remembered', 'love', 'loves', 'loving', 'loved',
+      'consider', 'considers', 'considering', 'considered', 'appear', 'appears', 'appearing', 'appeared',
+      'buy', 'buys', 'buying', 'bought', 'wait', 'waits', 'waiting', 'waited',
+      'serve', 'serves', 'serving', 'served', 'die', 'dies', 'dying', 'died',
+      'send', 'sends', 'sending', 'sent', 'expect', 'expects', 'expecting', 'expected',
+      'build', 'builds', 'building', 'built', 'stay', 'stays', 'staying', 'stayed',
+      'fall', 'falls', 'falling', 'fell', 'cut', 'cuts', 'cutting',
+      'reach', 'reaches', 'reaching', 'reached', 'kill', 'kills', 'killing', 'killed',
+      'remain', 'remains', 'remaining', 'remained', 'suggest', 'suggests', 'suggesting', 'suggested',
+      'raise', 'raises', 'raising', 'raised', 'pass', 'passes', 'passing', 'passed',
+      'sell', 'sells', 'selling', 'sold', 'require', 'requires', 'requiring', 'required',
+      'report', 'reports', 'reporting', 'reported', 'decide', 'decides', 'deciding', 'decided',
+      'pull', 'pulls', 'pulling', 'pulled'
+    ]);
+    
+    const words = text
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ') // Remove punctuation
+      .split(/\s+/) // Split on whitespace
+      .filter(word => 
+        word.length > 4 && // Only meaningful words
+        word.length < 20 && // Avoid very long words
+        !stopWords.has(word) && // Remove stop words
+        !/^\d+$/.test(word) && // Remove pure numbers
+        !/^(http|www|com|org|net|edu)/.test(word) // Remove web-related terms
+      )
+      .map(word => {
+        // Capitalize and clean up
+        return word.charAt(0).toUpperCase() + word.slice(1);
+      });
+    
+    // Return unique words, prioritizing longer/more specific terms
+    const uniqueWords = [...new Set(words)];
+    return uniqueWords
+      .sort((a, b) => b.length - a.length) // Prefer longer, more specific terms
+      .slice(0, 3);
+  };
+
+  // Analyze content for topic-specific tags
+  const analyzeContentForTopics = (text: string): string[] => {
+    if (!text) return [];
+    
+    const lowerText = text.toLowerCase();
+    const topics: string[] = [];
+    
+    // Technology topics
+    if (lowerText.match(/\b(ai|artificial intelligence|machine learning|automation|robot|tech|software|app|code|programming|development|startup|innovation)\b/)) {
+      topics.push('Technology');
+    }
+    
+    // Business & Finance
+    if (lowerText.match(/\b(business|entrepreneur|startup|invest|finance|money|economy|market|sales|revenue|profit|growth|strategy)\b/)) {
+      topics.push('Business');
+    }
+    
+    // Health & Wellness
+    if (lowerText.match(/\b(health|wellness|fitness|nutrition|diet|exercise|medical|doctor|mental|therapy|meditation|sleep)\b/)) {
+      topics.push('Wellness');
+    }
+    
+    // Education & Learning
+    if (lowerText.match(/\b(education|learning|study|course|tutorial|guide|teach|skill|knowledge|university|research)\b/)) {
+      topics.push('Learning');
+    }
+    
+    // Science & Research
+    if (lowerText.match(/\b(science|research|study|experiment|discovery|analysis|data|climate|environment|space|physics|biology)\b/)) {
+      topics.push('Science');
+    }
+    
+    // Design & Creative
+    if (lowerText.match(/\b(design|creative|art|visual|graphics|ui|ux|brand|aesthetic|photography|video)\b/)) {
+      topics.push('Design');
+    }
+    
+    // Productivity & Tools
+    if (lowerText.match(/\b(productivity|efficiency|tool|workflow|organize|method|system|process|optimize|automation)\b/)) {
+      topics.push('Productivity');
+    }
+    
+    // News & Current Events
+    if (lowerText.match(/\b(news|breaking|update|announcement|report|politics|government|policy|election|crisis)\b/)) {
+      topics.push('News');
+    }
+    
+    return topics.slice(0, 2); // Limit to 2 topic tags
+  };
+
+  // Get platform-specific contextual tags
+  const getPlatformSpecificTags = (domain: string, title: string): string[] => {
+    const tags: string[] = [];
+    const lowerDomain = domain.toLowerCase();
+    const lowerTitle = title.toLowerCase();
+    
+    if (lowerDomain.includes('youtube.com') || lowerDomain.includes('vimeo.com')) {
+      if (lowerTitle.includes('tutorial') || lowerTitle.includes('how to')) {
+        tags.push('Tutorial');
+      } else if (lowerTitle.includes('review')) {
+        tags.push('Review');
+      } else {
+        tags.push('Video');
+      }
+    } else if (lowerDomain.includes('github.com')) {
+      tags.push('OpenSource');
+    } else if (lowerDomain.includes('medium.com') || lowerDomain.includes('substack.com')) {
+      tags.push('Article');
+    } else if (lowerDomain.includes('stackoverflow.com')) {
+      tags.push('Programming');
+    } else if (lowerDomain.includes('linkedin.com')) {
+      tags.push('Professional');
+    } else if (lowerDomain.includes('reddit.com')) {
+      tags.push('Discussion');
+    } else if (lowerDomain.includes('twitter.com') || lowerDomain.includes('x.com')) {
+      tags.push('Social');
+    } else if (lowerDomain.includes('docs.google.com') || lowerDomain.includes('notion.so')) {
+      tags.push('Document');
+    } else if (lowerDomain.includes('figma.com') || lowerDomain.includes('dribbble.com')) {
+      tags.push('Design');
+    }
+    
+    return tags;
+  };
+
+  // Extract keywords from URL structure
+  const extractUrlKeywords = (url: string): string[] => {
+    if (!url) return [];
+    
+    try {
+      const urlObj = new URL(url);
+      const pathParts = urlObj.pathname
+        .split('/')
+        .filter(part => part.length > 2 && !part.match(/^\d+$/))
+        .map(part => part.replace(/[-_]/g, ' '))
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .slice(0, 2);
+      
+      return pathParts;
+    } catch {
+      return ['Link'];
+    }
+  };
+
+  // Advanced filtering and ranking of suggestions
+  const filterAndRankSuggestions = (suggestions: string[]): string[] => {
+    // Remove duplicates and empty strings
+    const unique = [...new Set(suggestions.filter(tag => tag && tag.length > 0))];
+    
+    // Score suggestions based on relevance
+    const scored = unique.map(tag => ({
+      tag,
+      score: calculateTagRelevance(tag)
+    }));
+    
+    // Sort by score and return tags
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .map(item => item.tag);
+  };
+
+  // Calculate relevance score for a tag
+  const calculateTagRelevance = (tag: string): number => {
+    let score = 0;
+    
+    // Prefer longer, more specific tags
+    score += tag.length * 0.1;
+    
+    // Prefer tags that are not too generic
+    const genericTags = ['Link', 'Article', 'Video', 'Document', 'Content', 'Post', 'Page'];
+    if (!genericTags.includes(tag)) {
+      score += 2;
+    }
+    
+    // Prefer capitalized/proper nouns
+    if (tag.charAt(0) === tag.charAt(0).toUpperCase()) {
+      score += 1;
+    }
+    
+    // Prefer tags with specific patterns
+    if (tag.match(/^[A-Z][a-z]+$/)) { // Single capitalized word
+      score += 1;
+    }
+    
+    return score;
+  };
+
+  // Generate focused AI response based on specific message being replied to
+  const generateFocusedReplyResponse = async (userQuestion: string, replyToMessage: Message): Promise<string> => {
+    try {
+      console.log('🎯 Generating focused reply for message type:', replyToMessage.type);
+      console.log('🎯 Reply message details:', {
+        id: replyToMessage.id,
+        type: replyToMessage.type,
+        url: replyToMessage.url,
+        content: replyToMessage.content,
+        linkPreview: replyToMessage.linkPreview
+      });
+      
+      // Build focused context based on the specific message
+      let focusedContext = `USER QUESTION: "${userQuestion}"\n\n`;
+      focusedContext += `REPLYING TO SPECIFIC CONTENT:\n`;
+      
+      if (replyToMessage.type === 'image' && replyToMessage.url) {
+        // For images, get the AI analysis from the database
+        const dbMessages = await chatService.getUserMessages();
+        const dbMessage = dbMessages.find(msg => 
+          msg.file_url === replyToMessage.url && msg.type === 'image'
+        );
+        
+        if (dbMessage && dbMessage.ai_analysis) {
+          focusedContext += `IMAGE ANALYSIS:\n${dbMessage.ai_analysis}\n\n`;
+          if (dbMessage.visual_description) {
+            focusedContext += `VISUAL DESCRIPTION:\n${dbMessage.visual_description}\n\n`;
+          }
+        } else {
+          focusedContext += `IMAGE: ${replyToMessage.content}\n\n`;
+        }
+      } else if (replyToMessage.type === 'link' && replyToMessage.url) {
+        // For links, get extracted content from database
+        const dbMessages = await chatService.getUserMessages();
+        const dbMessage = dbMessages.find(msg => 
+          msg.file_url === replyToMessage.url && msg.type === 'link'
+        );
+        
+        if (dbMessage && dbMessage.extracted_text) {
+          focusedContext += `LINK CONTENT:\n`;
+          focusedContext += `Title: ${dbMessage.extracted_title || 'Unknown'}\n`;
+          focusedContext += `URL: ${replyToMessage.url}\n`;
+          focusedContext += `Full Text Content:\n${dbMessage.extracted_text}\n\n`;
+        } else if (replyToMessage.linkPreview) {
+          // Use link preview data if no database content
+          focusedContext += `LINK CONTENT:\n`;
+          focusedContext += `Title: ${replyToMessage.linkPreview.title || 'Unknown'}\n`;
+          focusedContext += `Description: ${replyToMessage.linkPreview.description || 'No description'}\n`;
+          focusedContext += `Domain: ${replyToMessage.linkPreview.domain || 'Unknown'}\n`;
+          focusedContext += `URL: ${replyToMessage.url}\n\n`;
+        } else {
+          focusedContext += `LINK: ${replyToMessage.content}\nURL: ${replyToMessage.url}\n\n`;
+        }
+      } else if (replyToMessage.type === 'file' && replyToMessage.filename) {
+        // For files, get extracted content from database
+        const dbMessages = await chatService.getUserMessages();
+        const dbMessage = dbMessages.find(msg => 
+          msg.filename === replyToMessage.filename && msg.type === 'file'
+        );
+        
+        if (dbMessage && dbMessage.extracted_text) {
+          focusedContext += `DOCUMENT CONTENT:\n`;
+          focusedContext += `Filename: ${replyToMessage.filename}\n`;
+          focusedContext += `Title: ${dbMessage.extracted_title || 'Unknown'}\n`;
+          focusedContext += `Full Text Content:\n${dbMessage.extracted_text}\n\n`;
+        } else {
+          focusedContext += `DOCUMENT: ${replyToMessage.filename}\nContent: ${replyToMessage.content}\n\n`;
+        }
+      } else {
+        // For text messages
+        focusedContext += `TEXT MESSAGE: ${replyToMessage.content}\n\n`;
+      }
+      
+      // Add tags if available
+      if (replyToMessage.tags && replyToMessage.tags.length > 0) {
+        focusedContext += `TAGS: ${replyToMessage.tags.join(', ')}\n\n`;
+      }
+      
+      focusedContext += `Answer the user's question based ONLY on the specific content above. Be specific and reference details from this exact content. If the question cannot be answered from this specific content, say so clearly.`;
+      
+      console.log('📝 Focused context length:', focusedContext.length);
+      console.log('📝 Full focused context:', focusedContext);
+      
+      // Generate response using OpenAI service with focused context
+      const systemPrompt = `You're Bill, a helpful AI assistant. Answer based ONLY on the specific content provided.
+
+CRITICAL RULES:
+- ONLY use information from the provided content
+- If the answer isn't in the provided content, say "I don't have that specific information in this content"
+- NEVER make up or guess information
+- NEVER mention external knowledge
+
+RESPONSE STYLE:
+- Keep responses concise but thorough (2-4 sentences)
+- Use casual, friendly tone
+- Reference specific details from the provided content
+- Be specific about what content you're looking at
+- Provide enough detail to be helpful, but don't be verbose
+
+EXAMPLES:
+- "Based on this content, I can see that... This is important because..."
+- "From this document, the main point is... The document also mentions..."
+- "I don't have that specific information in this content"
+
+Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
+
+      const response = await openAIService.generateFocusedResponse(systemPrompt, focusedContext);
+
+      console.log('✅ Focused reply response generated');
+      return response;
+    } catch (error) {
+      console.error('❌ Error generating focused reply response:', error);
+      return "Sorry, I'm having trouble analyzing that specific content right now. Please try again.";
+    }
+  };
+
+  useFocusEffect(
+    useCallback(() => {
+      console.log('🎯 Screen focused, checking if messages need to be loaded...');
+      // Only load messages if they haven't been loaded yet
+      if (!hasLoadedMessages) {
+        // Add a small delay to ensure authentication is ready
+        setTimeout(() => {
+          loadMessages();
+        }, 100);
+      }
+    }, [hasLoadedMessages])
+  );
+
+  // Test Claude 3.5 Sonnet image analysis
+  const testClaudeImageAnalysis = async () => {
+    try {
+      console.log('🧪 Testing Claude 3.5 Sonnet image analysis...');
+      
+      const FastImageAnalyzer = await import('../services/fast-image-analyzer');
+      const analyzer = FastImageAnalyzer.default.getInstance();
+      
+      // Test basic analysis
+      await analyzer.testAnalyzer();
+      
+      // Test database storage
+      await analyzer.testDatabaseStorage();
+      
+      console.log('✅ Claude 3.5 Sonnet tests completed!');
+    } catch (error) {
+      console.error('❌ Claude 3.5 Sonnet test failed:', error);
+    }
+  };
+
   return (
     <RNSafeAreaView style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#ffffff" />
@@ -1198,7 +2853,27 @@ const ChatScreen = () => {
               <Text style={styles.headerTitle}>Chat</Text>
             </View>
             <View style={styles.headerRight}>
-              <TouchableOpacity style={styles.clearButton} onPress={clearAllMessages}>
+              <TouchableOpacity 
+                style={styles.clearButton} 
+                onPress={() => {
+                  router.push('/search');
+                }}
+              >
+                <Ionicons name="search" size={20} color="#007AFF" />
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.clearButton} 
+                onPress={() => {
+                  console.log('🔄 Manual refresh triggered');
+                  loadMessages();
+                }}
+              >
+                <Ionicons name="refresh" size={20} color="#007AFF" />
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.clearButton} 
+                onPress={clearAllMessages}
+              >
                 <Ionicons name="trash-outline" size={20} color="#FF3B30" />
               </TouchableOpacity>
             </View>
@@ -1208,17 +2883,69 @@ const ChatScreen = () => {
 
       {/* Welcome Message */}
       <View style={styles.welcomeContainer}>
-        {aiLoading && (
-          <View style={styles.aiLoadingContainer}>
-            <Text style={styles.aiLoadingText}>🤖 Blii is thinking...</Text>
-          </View>
-        )}
+
         
         {/* No empty state image. Only show welcome text and action buttons for consistency. */}
       </View>
 
       {/* Messages */}
       <View style={styles.messagesContainer}>
+        {/* Loading overlay for clearing messages */}
+        {clearingMessages && (
+          <View style={styles.clearingOverlay}>
+            <View style={styles.clearingLoader}>
+              <Animated.View style={[
+                styles.clearingSpinner, 
+                { 
+                  transform: [{ 
+                    rotate: deleteSpinValue.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0deg', '360deg']
+                    })
+                  }] 
+                }
+              ]}>
+                <Ionicons name="trash-outline" size={32} color="#FF3B30" />
+              </Animated.View>
+              <Text style={styles.clearingText}>{deletingText}</Text>
+              <View style={styles.clearingProgress}>
+                <Animated.View 
+                  style={[
+                    styles.clearingProgressBar,
+                    {
+                      width: `${deletingProgress}%`,
+                      backgroundColor: deletingProgress === 100 ? '#34C759' : '#FF3B30'
+                    }
+                  ]} 
+                />
+              </View>
+              <Text style={styles.clearingProgressText}>{Math.round(deletingProgress)}%</Text>
+            </View>
+          </View>
+        )}
+        
+        {/* Loading overlay for loading messages */}
+        {loadingMessages && (
+          <View style={styles.loadingOverlay}>
+            <View style={styles.messageLoadingLoader}>
+              <Animated.View style={[
+                styles.messageLoadingSpinner, 
+                { 
+                  transform: [{ 
+                    rotate: deleteSpinValue.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ['0deg', '360deg']
+                    })
+                  }] 
+                }
+              ]}>
+                <Ionicons name="refresh" size={24} color="#007AFF" />
+              </Animated.View>
+              <Text style={styles.messageLoadingText}>Loading messages...</Text>
+            </View>
+          </View>
+        )}
+        
         <ScrollView
           ref={scrollViewRef}
           style={styles.scrollView}
@@ -1229,13 +2956,18 @@ const ChatScreen = () => {
           scrollEventThrottle={16}
         >
           {messages.map((message, index) => (
-            <TouchableOpacity
+            <View key={`message-wrapper-${index}-${message.id}`}>
+              <TouchableOpacity
               key={`message-${index}-${message.id}`}
               style={[
                 styles.messageContainer, 
                 message.isBot 
                   ? styles.botMessageContainer 
-                  : (selectionMode ? styles.userMessageContainerSelection : styles.userMessageContainer)
+                  : (selectionMode ? styles.userMessageContainerSelection : styles.userMessageContainer),
+                // Highlight the message when context menu is shown for this message
+                showContextMenu && contextMenuMessage?.id === message.id && styles.messageHighlighted,
+                // Blur all messages except the selected one when context menu is shown
+                showContextMenu && contextMenuMessage?.id !== message.id && styles.messageBlurred
               ]}
               onLongPress={(event) => handleMessageLongPress(message, event)}
               onPress={() => {
@@ -1263,106 +2995,399 @@ const ChatScreen = () => {
                 </View>
               )}
               
-              <View style={[styles.messageBubble, message.isBot ? styles.botMessage : styles.userMessage]}>
-                {/* Only show text for non-image messages */}
-                {message.type !== 'image' && message.type !== 'link' && (
-                  message.content === '...' && message.isBot ? (
-                    <TypingIndicator />
-                  ) : (
-                    <Text style={[styles.messageText, message.isBot ? styles.botMessageText : styles.userMessageText]}>{message.content}</Text>
-                  )
-                )}
-                {/* For image messages, only show the image (and tags below) */}
-                {message.type === 'image' && message.url && (
-                  <Image 
-                    source={{ uri: message.url }} 
-                    style={styles.imageMessage}
-                  />
-                )}
-                {message.type === 'file' && (
-                  <View style={styles.fileMessage}>
-                    <Text style={styles.fileMessageText}>{message.filename}</Text>
-                    <Ionicons name="document" size={20} color="#666" />
-                  </View>
-                )}
-                {message.type === 'link' && message.linkPreview && (
-                  <View style={styles.linkMessageContainer}>
-                    {/* Image/Preview first */}
-                    <TouchableOpacity 
-                      style={styles.linkPreview}
-                      onPress={() => {
-                        // Open link in browser
-                        if (message.url) {
-                          console.log('Opening link:', message.url);
-                          Linking.openURL(message.url);
-                        }
-                      }}
-                    >
-                      <Image 
-                        source={message.linkPreview.image ? { 
-                          uri: message.linkPreview.image,
-                          headers: {
-                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+              {!message.isBot ? (
+                <LinearGradient
+                  colors={['#D0E1FF', '#B0CFFF']}
+                  style={[styles.messageBubble, styles.userMessage]}
+                >
+                  {/* Show reply preview for user messages that are replies */}
+                  {message.replyTo && (
+                    <View style={styles.userReplyPreview}>
+                      {/* Header with "Replying to" */}
+                      <View style={styles.userReplyPreviewHeader}>
+                        <Ionicons name="arrow-undo" size={12} color="#FFFFFF" />
+                        <Text style={styles.userReplyPreviewLabel}>Replying to</Text>
+                      </View>
+                      
+                      <View style={styles.userReplyPreviewContainer}>
+                        {/* White bar on the left */}
+                        <View style={styles.userReplyPreviewBar} />
+                        
+                        <View style={styles.userReplyPreviewContent}>
+                          <View style={styles.userReplyPreviewTextContent}>
+                            {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
+                              <>
+                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
+                                  {message.replyTo.linkPreview.title || 'Link'}
+                                </Text>
+                                <Text style={styles.userReplyPreviewDomain}>
+                                  {message.replyTo.linkPreview.domain || 'Link'}
+                                </Text>
+                              </>
+                            ) : message.replyTo.type === 'file' ? (
+                              <>
+                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
+                                  {message.replyTo.filename || 'Document'}
+                                </Text>
+                                <Text style={styles.userReplyPreviewDomain}>
+                                  Document
+                                </Text>
+                              </>
+                            ) : message.replyTo.type === 'image' ? (
+                              <>
+                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
+                                  Image
+                                </Text>
+                                <Text style={styles.userReplyPreviewDomain}>
+                                  Photo
+                                </Text>
+                              </>
+                            ) : (
+                              <>
+                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
+                                  {message.replyTo.content}
+                                </Text>
+                                <Text style={styles.userReplyPreviewDomain}>
+                                  Message
+                                </Text>
+                              </>
+                            )}
+                          </View>
+                          
+                          {/* Image on the right */}
+                          {message.replyTo.type === 'image' && message.replyTo.url && (
+                            <Image 
+                              source={{ uri: message.replyTo.url }} 
+                              style={styles.userReplyPreviewImage}
+                              resizeMode="cover"
+                            />
+                          )}
+                          {message.replyTo.type === 'link' && message.replyTo.linkPreview?.image && (
+                            <Image 
+                              source={{ uri: message.replyTo.linkPreview.image }} 
+                              style={styles.userReplyPreviewImage}
+                              resizeMode="cover"
+                            />
+                          )}
+                          {message.replyTo.type === 'file' && (
+                            <View style={styles.userReplyPreviewFileIcon}>
+                              <Ionicons name="document" size={16} color="#FFFFFF" />
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  )}
+
+                  {message.type === 'link' && message.linkPreview ? (
+                    <View style={styles.linkMessageContainer}>
+                      {/* Image/Preview first */}
+                      <TouchableOpacity 
+                        style={styles.linkPreview}
+                        onPress={() => {
+                          // Open link in browser
+                          if (message.url) {
+                            console.log('Opening link:', message.url);
+                            Linking.openURL(message.url);
                           }
-                        } : require('../assets/images/react-logo.png')} 
-                        style={styles.linkPreviewImage}
-                        resizeMode="cover"
-                        onError={(error) => {
-                          console.log('❌ Image load error for:', message.linkPreview?.image, error.nativeEvent.error);
                         }}
-                        onLoad={() => {
-                          console.log('✅ Image loaded successfully:', message.linkPreview?.image);
-                        }}
-                      />
-                      <View style={styles.linkPreviewContent}>
-                        <Text style={styles.linkPreviewTitle} numberOfLines={2}>
-                          {message.linkPreview.title || 'Link'}
-                        </Text>
-                        {message.linkPreview.description && (
-                          <Text style={styles.linkPreviewDescription} numberOfLines={2}>
-                            {message.linkPreview.description}
+                      >
+                        <Image 
+                          source={message.linkPreview.image ? { 
+                            uri: message.linkPreview.image,
+                            headers: {
+                              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+                            }
+                          } : require('../assets/images/react-logo.png')} 
+                          style={styles.linkPreviewImage}
+                          resizeMode="cover"
+                          onError={(error) => {
+                            console.log('❌ Image load error for:', message.linkPreview?.image, error.nativeEvent.error);
+                          }}
+                          onLoad={() => {
+                            console.log('✅ Image loaded successfully:', message.linkPreview?.image);
+                          }}
+                        />
+                        <View style={styles.linkPreviewContent}>
+                          <Text style={styles.linkPreviewTitle} numberOfLines={4}>
+                            {cleanDisplayTitle(message.linkPreview.title) || 'Link'}
                           </Text>
-                        )}
-                        <Text style={styles.linkPreviewDomain}>
-                          {message.linkPreview.domain || 'Link'}
+                          <Text style={styles.linkPreviewDomain}>
+                            {message.linkPreview.domain || 'Link'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                      
+                      {/* URL below the preview, underlined */}
+                      <TouchableOpacity 
+                        onPress={() => {
+                          if (message.url) {
+                            Linking.openURL(message.url);
+                          }
+                        }}
+                        style={styles.linkUrlContainer}
+                      >
+                        <Text style={styles.linkUrlText}>
+                          {message.url}
                         </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <>
+                      {/* Only show text for non-image messages */}
+                      {message.type !== 'image' && (
+                        message.content === '...' && message.isBot ? (
+                          <TypingIndicator />
+                        ) : (
+                          <Text style={[styles.messageText, styles.userMessageText]}>{message.content}</Text>
+                        )
+                      )}
+                      {/* For image messages, only show the image (and tags below) */}
+                      {message.type === 'image' && message.url && (
+                        <Image 
+                          source={{ uri: message.url }} 
+                          style={styles.imageMessage}
+                        />
+                      )}
+                                        {message.type === 'file' && (
+                    <View style={styles.fileMessage}>
+                      <View style={styles.fileIconContainer}>
+                        <Ionicons name="document" size={24} color="#FF3B30" />
                       </View>
-                    </TouchableOpacity>
-                    
-                    {/* URL below the preview, underlined */}
-                    <TouchableOpacity 
-                      onPress={() => {
-                        if (message.url) {
-                          Linking.openURL(message.url);
-                        }
-                      }}
-                      style={styles.linkUrlContainer}
-                    >
-                      <Text style={styles.linkUrlText}>
-                        {message.url}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-                {/* Display tags */}
-                {message.tags && message.tags.length > 0 && (
-                  <View style={styles.tagsContainer}>
-                    {message.tags.map((tag, tagIndex) => (
-                      <View key={`tag-${index}-${tagIndex}-${tag}`} style={[
-                        styles.tagBadge, 
-                        message.isBot ? styles.tagBadgeBot : styles.tagBadgeUser
-                      ]}>
-                        <Text style={[
-                          styles.tagText,
-                          message.isBot ? styles.tagTextBot : styles.tagTextUser
-                        ]}>#{tag}</Text>
+                      <View style={styles.fileInfoContainer}>
+                        <Text style={styles.fileMessageText}>{message.filename}</Text>
+                        <Text style={styles.fileDetailsText}>{getFileDetails(message)}</Text>
                       </View>
-                    ))}
+                    </View>
+                  )}
+                    </>
+                  )}
+                  
+                  {/* Tags and timestamp inside the message bubble */}
+                  <View style={styles.messageFooter}>
+                    {/* Tags container that takes available space */}
+                    <View style={styles.tagsContainer}>
+                      {message.tags && message.tags.length > 0 && 
+                        message.tags.map((tag, tagIndex) => (
+                          <View key={`tag-${index}-${tagIndex}-${tag}`} style={styles.tagBadgeUser}>
+                            <Text 
+                              style={styles.tagTextUser}
+                              numberOfLines={1}
+                              ellipsizeMode="tail"
+                            >
+                              {(() => {
+                                // Check if tag already starts with an emoji
+                                const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(tag);
+                                if (startsWithEmoji) {
+                                  return tag; // Tag already has emoji, return as-is
+                                } else {
+                                  const emoji = getTagEmoji(tag);
+                                  return emoji ? `${emoji} ${tag}` : tag;
+                                }
+                              })()}
+                            </Text>
+                          </View>
+                        ))
+                      }
+                    </View>
+                    {/* Timestamp positioned absolutely */}
+                    <View style={styles.timestampContainer}>
+                      <Text style={styles.userTimestamp}>{message.timestamp}</Text>
+                      {message.tags && message.tags.includes('starred') && (
+                        <Ionicons name="star" size={12} color="#FFD700" style={{ marginLeft: 4 }} />
+                      )}
+                    </View>
                   </View>
-                )}
-              </View>
-              <Text style={[styles.timestamp, message.isBot ? styles.botTimestamp : styles.userTimestamp]}>{message.timestamp}</Text>
+                </LinearGradient>
+              ) : (
+                <View style={[styles.messageBubble, styles.botMessage]}>
+                  {/* Only show text for non-image messages */}
+                  {message.type !== 'image' && (
+                    message.content === '...' && message.isBot ? (
+                      <TypingIndicator />
+                    ) : (
+                      <ClickableText 
+                        text={message.content} 
+                        style={[styles.messageText, styles.botMessageText]}
+                      />
+                    )
+                  )}
+                  {/* For image messages, only show the image (and tags below) */}
+                  {message.type === 'image' && message.url && (
+                    <Image 
+                      source={{ uri: message.url }} 
+                      style={styles.imageMessage}
+                    />
+                  )}
+                  {message.type === 'file' && (
+                    <View style={styles.fileMessage}>
+                      <View style={styles.fileIconContainer}>
+                        <Ionicons name="document" size={24} color="#FF3B30" />
+                      </View>
+                      <View style={styles.fileInfoContainer}>
+                        <Text style={styles.fileMessageText}>{message.filename}</Text>
+                        <Text style={styles.fileDetailsText}>{getFileDetails(message)}</Text>
+                      </View>
+                    </View>
+                  )}
+                  
+                  {/* Tags for bot messages (no timestamp) */}
+                  {message.tags && message.tags.length > 0 && (
+                    <View style={styles.messageFooter}>
+                      {/* Tags container that takes available space */}
+                      <View style={styles.tagsContainer}>
+                        {message.tags.map((tag, tagIndex) => (
+                          <View key={`tag-${index}-${tagIndex}-${tag}`} style={styles.tagBadgeBot}>
+                            <Text style={styles.tagTextBot}>
+                              {(() => {
+                                // Check if tag already starts with an emoji
+                                const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(tag);
+                                if (startsWithEmoji) {
+                                  return tag; // Tag already has emoji, return as-is
+                                } else {
+                                  const emoji = getTagEmoji(tag);
+                                  return emoji ? `${emoji} ${tag}` : tag;
+                                }
+                              })()}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    </View>
+                  )}
+                  
+                  {/* Show the actual content being referenced for replies */}
+                  {message.isBot && message.replyTo && (
+                    <View style={styles.referencedContentContainer}>
+                      {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
+                        <View style={styles.linkMessageContainer}>
+                          <TouchableOpacity 
+                            style={styles.linkPreview}
+                            onPress={() => {
+                              if (message.replyTo?.url) {
+                                console.log('Opening link:', message.replyTo.url);
+                                Linking.openURL(message.replyTo.url);
+                              }
+                            }}
+                          >
+                            <Image 
+                              source={message.replyTo.linkPreview.image ? { 
+                                uri: message.replyTo.linkPreview.image,
+                                headers: {
+                                  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+                                }
+                              } : require('../assets/images/react-logo.png')} 
+                              style={styles.linkPreviewImage}
+                              resizeMode="cover"
+                            />
+                            <View style={styles.linkPreviewContent}>
+                              <Text style={styles.linkPreviewTitle} numberOfLines={4}>
+                                {message.replyTo.linkPreview.title || 'Link'}
+                              </Text>
+                              <Text style={styles.linkPreviewDomain}>
+                                {message.replyTo.linkPreview.domain || 'Link'}
+                              </Text>
+                            </View>
+                          </TouchableOpacity>
+                          
+                          {/* URL below the preview */}
+                          <TouchableOpacity 
+                            onPress={() => {
+                              if (message.replyTo?.url) {
+                                Linking.openURL(message.replyTo.url);
+                              }
+                            }}
+                            style={styles.linkUrlContainer}
+                          >
+                            <Text style={styles.linkUrlText}>
+                              {message.replyTo.url}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : message.replyTo.type === 'image' && message.replyTo.url ? (
+                        <View style={styles.referencedImageContainer}>
+                          <Image 
+                            source={{ uri: message.replyTo.url }} 
+                            style={styles.referencedImage}
+                            resizeMode="cover"
+                          />
+                        </View>
+                      ) : message.replyTo.type === 'file' ? (
+                        <View style={styles.referencedFileContainer}>
+                          <View style={styles.fileMessage}>
+                            <Text style={styles.fileMessageText}>{message.replyTo.filename}</Text>
+                            <Ionicons name="document" size={20} color="#666" />
+                          </View>
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+                </View>
+              )}
+              
+              {/* Custom add tag button - positioned at bottom left of user messages with media */}
+              {!selectionMode && !message.isBot && (message.type === 'image' || message.type === 'file' || message.type === 'link') && (
+                <TouchableOpacity 
+                  style={styles.addTagButtonBottomLeft}
+                  onPress={() => handleAddTagToMessage(message)}
+                >
+                  <View style={styles.addTagButtonCircle}>
+                    <Ionicons name="add" size={24} color="#3E3E3E" />
+                  </View>
+                </TouchableOpacity>
+              )}
+              
+              {/* Remove the old tags and timestamp that were outside the bubble */}
             </TouchableOpacity>
+            
+            {/* Tag suggestions - show below this specific message */}
+            {showTagSuggestions && currentMessageForTagging?.id === message.id && (
+              <View style={styles.tagSuggestionsContent}>
+                {/* Show existing AI tag (already applied/selected) */}
+                {message.tags && message.tags.slice(0, 1).map((existingTag, index) => (
+                  <TouchableOpacity
+                    key={`existing-${index}`}
+                    style={styles.tagSuggestionItemSelected}
+                    onPress={() => {}} // Already selected, no action needed
+                  >
+                    <Text style={styles.tagSuggestionTextSelected}>
+                      {(() => {
+                        // Check if tag already starts with an emoji
+                        const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(existingTag);
+                        if (startsWithEmoji) {
+                          return existingTag; // Tag already has emoji, return as-is
+                        } else {
+                          const emoji = getTagEmoji(existingTag);
+                          return emoji ? `${emoji} ${existingTag}` : existingTag;
+                        }
+                      })()}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                
+                {/* Show exactly 1 additional AI-generated tag */}
+                {suggestedTags.slice(0, 1).map((tag, index) => (
+                  <TouchableOpacity
+                    key={`suggestion-${index}`}
+                    style={styles.tagSuggestionItem}
+                    onPress={() => handleTagSuggestionSelect(tag)}
+                  >
+                    <Text style={styles.tagSuggestionText}>
+                      {getTagEmoji(tag)} {tag}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                
+                {/* Custom tag option - always at the end */}
+                <TouchableOpacity
+                  style={[styles.tagSuggestionItem, styles.customTagItem]}
+                  onPress={handleCustomTagClick}
+                >
+                  <Text style={styles.customTagText}>+ Custom Tag</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+            </View>
           ))}
 
         </ScrollView>
@@ -1382,144 +3407,9 @@ const ChatScreen = () => {
         </View>
       )}
 
-      {/* Reply Preview Above Input */}
-      {replyPreview && (
-        <View style={styles.replyPreviewContainer}>
-          {/* Header with "Replying to" above everything */}
-          <View style={styles.replyPreviewHeader}>
-            <Ionicons name="arrow-undo" size={14} color="#007AFF" />
-            <Text style={styles.replyPreviewLabel}>Replying to</Text>
-          </View>
-          
-          <View style={styles.replyPreview}>
-            {/* Main content area with image and text */}
-            <View style={styles.replyPreviewMainContent}>
-              {/* Image on the left */}
-              {replyPreview.type === 'image' && replyPreview.url && (
-                <Image 
-                  source={{ uri: replyPreview.url }} 
-                  style={styles.replyPreviewImage}
-                  resizeMode="cover"
-                />
-              )}
-              {replyPreview.type === 'link' && replyPreview.linkPreview?.image && (
-                <Image 
-                  source={{ uri: replyPreview.linkPreview.image }} 
-                  style={styles.replyPreviewImage}
-                  resizeMode="cover"
-                />
-              )}
-              {replyPreview.type === 'file' && (
-                <View style={styles.replyPreviewFileIcon}>
-                  <Ionicons name="document" size={24} color="#666" />
-                </View>
-              )}
-              
-              {/* Text content on the right */}
-              <View style={styles.replyPreviewTextContent}>
-                {replyPreview.type === 'link' && replyPreview.linkPreview ? (
-                  <>
-                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
-                      {replyPreview.linkPreview.title || 'Link'}
-                    </Text>
-                    <Text style={styles.replyPreviewDomain}>
-                      {replyPreview.linkPreview.domain || 'Link'}
-                    </Text>
-                  </>
-                ) : replyPreview.type === 'file' ? (
-                  <>
-                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
-                      {replyPreview.filename || 'Document'}
-                    </Text>
-                    <Text style={styles.replyPreviewDomain}>
-                      Document
-                    </Text>
-                  </>
-                ) : replyPreview.type === 'image' ? (
-                  <>
-                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
-                      Image
-                    </Text>
-                    <Text style={styles.replyPreviewDomain}>
-                      Photo
-                    </Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.replyPreviewTitle} numberOfLines={2}>
-                      {replyPreview.content}
-                    </Text>
-                    <Text style={styles.replyPreviewDomain}>
-                      Message
-                    </Text>
-                  </>
-                )}
-              </View>
-              
-              {/* Close button */}
-              <TouchableOpacity 
-                style={styles.replyPreviewClose}
-                onPress={() => setReplyPreview(null)}
-              >
-                <Ionicons name="close" size={18} color="#666" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      )}
 
-      {/* Link Preview Above Input (WhatsApp-style) */}
-      {(currentLinkPreview || linkPreviewLoading) && (
-        <View style={styles.inputLinkPreviewContainer}>
-          {linkPreviewLoading ? (
-            <View style={styles.linkPreviewLoading}>
-              <Text style={styles.linkPreviewLoadingText}>🔗 Generating preview...</Text>
-            </View>
-          ) : currentLinkPreview ? (
-            <View style={styles.inputLinkPreview}>
-              <TouchableOpacity 
-                style={styles.inputLinkPreviewContent}
-                onPress={() => {
-                  if (previewUrl) {
-                    Linking.openURL(previewUrl);
-                  }
-                }}
-              >
-                {currentLinkPreview.image && (
-                  <Image 
-                    source={{ uri: currentLinkPreview.image }} 
-                    style={styles.inputLinkPreviewImage}
-                    resizeMode="cover"
-                  />
-                )}
-                <View style={styles.inputLinkPreviewText}>
-                  <Text style={styles.inputLinkPreviewTitle} numberOfLines={1}>
-                    {currentLinkPreview.title}
-                  </Text>
-                  {currentLinkPreview.description && (
-                    <Text style={styles.inputLinkPreviewDescription} numberOfLines={2}>
-                      {currentLinkPreview.description}
-                    </Text>
-                  )}
-                  <Text style={styles.inputLinkPreviewDomain}>
-                    {currentLinkPreview.domain}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.inputLinkPreviewClose}
-                onPress={() => {
-                  setCurrentLinkPreview(null);
-                  setPreviewUrl('');
-                  setLinkPreviewLoading(false);
-                }}
-              >
-                <Ionicons name="close" size={16} color="#666" />
-              </TouchableOpacity>
-            </View>
-          ) : null}
-        </View>
-      )}
+
+
 
       {/* Selection Mode Bottom Bar */}
       {selectionMode && (
@@ -1551,6 +3441,160 @@ const ChatScreen = () => {
       {/* Input Area */}
       {!selectionMode && (
         <SafeAreaContextView edges={['bottom']} style={styles.inputContainer}>
+          {/* Link Preview Inside Input Container (WhatsApp-style) */}
+          {(currentLinkPreview || linkPreviewLoading) && (
+            <View style={styles.inputLinkPreviewContainer}>
+              {linkPreviewLoading ? (
+                <View style={styles.linkPreviewLoading}>
+                  <Text style={styles.linkPreviewLoadingText}>🔗 Generating preview...</Text>
+                </View>
+              ) : currentLinkPreview ? (
+                <View style={styles.inputLinkPreview}>
+                  <TouchableOpacity 
+                    style={styles.inputLinkPreviewCardContent}
+                    onPress={() => {
+                      if (previewUrl) {
+                        Linking.openURL(previewUrl);
+                      }
+                    }}
+                  >
+                    {currentLinkPreview.image && (
+                      <Image 
+                        source={{ uri: currentLinkPreview.image }} 
+                        style={styles.inputLinkPreviewImage}
+                        resizeMode="cover"
+                      />
+                    )}
+                    <View style={styles.inputLinkPreviewContent}>
+                      <Text style={styles.inputLinkPreviewTitle} numberOfLines={2}>
+                        {currentLinkPreview.title}
+                      </Text>
+                      <Text style={styles.inputLinkPreviewDomain}>
+                        {currentLinkPreview.domain}
+                      </Text>
+                    </View>
+                    <TouchableOpacity 
+                      style={styles.inputLinkPreviewClose}
+                      onPress={() => {
+                        setCurrentLinkPreview(null);
+                        setPreviewUrl('');
+                        setLinkPreviewLoading(false);
+                      }}
+                    >
+                      <Ionicons name="close" size={16} color="#666" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+            </View>
+          )}
+
+          {/* Reply Preview Inside Input Container */}
+          {replyPreview && (
+            <View style={styles.replyPreviewContainer}>
+              {/* Header with "Replying to" above everything */}
+              <View style={styles.replyPreviewHeader}>
+                <Ionicons name="arrow-undo" size={14} color="#007AFF" />
+                <Text style={styles.replyPreviewLabel}>Replying to</Text>
+              </View>
+              
+              <View style={styles.replyPreview}>
+                {/* Blue bar on the left */}
+                <View style={styles.replyPreviewBlueBar} />
+                
+                <TouchableOpacity 
+                  style={styles.replyPreviewContent}
+                  onPress={() => {
+                    // Optional: Handle tap to scroll to original message
+                  }}
+                >
+                  <View style={styles.replyPreviewTextContent}>
+                    {replyPreview.type === 'link' && replyPreview.linkPreview ? (
+                      <>
+                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                          {replyPreview.linkPreview.title || 'Link'}
+                        </Text>
+                        <Text style={styles.replyPreviewDomain}>
+                          {replyPreview.linkPreview.domain || 'Link'}
+                        </Text>
+                      </>
+                    ) : replyPreview.type === 'file' ? (
+                      <>
+                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                          {replyPreview.filename || 'Document'}
+                        </Text>
+                        <Text style={styles.replyPreviewDomain}>
+                          Document
+                        </Text>
+                      </>
+                    ) : replyPreview.type === 'image' ? (
+                      <>
+                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                          Image
+                        </Text>
+                        <Text style={styles.replyPreviewDomain}>
+                          Photo
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                          {replyPreview.content}
+                        </Text>
+                        <Text style={styles.replyPreviewDomain}>
+                          Message
+                        </Text>
+                      </>
+                    )}
+                  </View>
+                  
+                  {/* Image on the right */}
+                  {replyPreview.type === 'image' && replyPreview.url && (
+                    <Image 
+                      source={{ uri: replyPreview.url }} 
+                      style={styles.replyPreviewImage}
+                      resizeMode="cover"
+                    />
+                  )}
+                  {replyPreview.type === 'link' && replyPreview.linkPreview?.image && (
+                    <Image 
+                      source={{ uri: replyPreview.linkPreview.image }} 
+                      style={styles.replyPreviewImage}
+                      resizeMode="cover"
+                    />
+                  )}
+                  {replyPreview.type === 'file' && (
+                    <View style={styles.replyPreviewFileIcon}>
+                      <Ionicons name="document" size={24} color="#666" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={styles.replyPreviewClose}
+                  onPress={() => setReplyPreview(null)}
+                >
+                  <Ionicons name="close" size={16} color="#666" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+          
+          {/* Upload Loading Indicator */}
+          {uploading && (
+            <View style={styles.uploadLoadingContainer}>
+              <View style={styles.uploadLoadingContent}>
+                <ActivityIndicator size="small" color="#007AFF" />
+                <Text style={styles.uploadLoadingText}>
+                  {uploadingFileType === 'PDF' ? 'Processing PDF...' : 
+                   uploadingFileType === 'image' ? 'Uploading image...' : 
+                   uploadingFileType === 'document' ? 'Uploading document...' : 
+                   'Uploading file...'}
+                </Text>
+              </View>
+            </View>
+          )}
+          
         <View style={styles.inputWrapper}>
           <TouchableOpacity 
             style={styles.attachmentButton} 
@@ -1612,25 +3656,79 @@ const ChatScreen = () => {
             <View style={styles.bottomSheetHandle} />
             
             <View style={styles.bottomSheetHeader}>
-              <Text style={styles.bottomSheetTitle}>Add Tag</Text>
-              <TouchableOpacity onPress={cancelTagging} style={styles.bottomSheetCloseButton}>
-                <Ionicons name="close" size={24} color="#666" />
+                              <Text style={styles.bottomSheetTitle}>Add More Tags</Text>
+              <TouchableOpacity onPress={finalizePendingMessage} style={styles.bottomSheetCloseButton}>
+                <Ionicons name="checkmark" size={20} color="#FFFFFF" />
               </TouchableOpacity>
             </View>
 
             {/* Tag input */}
             <View style={styles.bottomSheetTagInput}>
-              <TextInput
-                style={styles.bottomSheetInput}
-                placeholder="Type to add new tag..."
-                value={currentTagInput}
-                onChangeText={setCurrentTagInput}
-                onSubmitEditing={handleTagInputSubmit}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
+              <View style={styles.tagInputContainer}>
+                <TextInput
+                  style={styles.bottomSheetInput}
+                  placeholder="Custom tag or note (max 30 chars)..."
+                  value={currentTagInput}
+                  onChangeText={(text) => {
+                    // Limit to 30 characters
+                    if (text.length <= 30) {
+                      setCurrentTagInput(text);
+                    }
+                  }}
+                  onSubmitEditing={handleTagInputSubmit}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  maxLength={30}
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.addTagButton,
+                    !currentTagInput.trim() && { opacity: 0.5 }
+                  ]}
+                  onPress={handleTagInputSubmit}
+                  disabled={!currentTagInput.trim()}
+                >
+                  <Text style={[
+                    styles.addTagButtonText,
+                    !currentTagInput.trim() && styles.addTagButtonTextDisabled
+                  ]}>
+                    Add
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.characterCounter}>
+                {currentTagInput.length}/30 characters
+              </Text>
             </View>
 
+            {/* User Intent/Note Input */}
+
+
+            {/* Suggestions Section */}
+            {suggestedTags.length > 0 && (
+              <View style={styles.suggestionsSection}>
+                <Text style={styles.sectionTitle}>Suggestions</Text>
+                <View style={styles.suggestionsGrid}>
+                  {suggestedTags.map((tag) => (
+                    <TouchableOpacity
+                      key={tag}
+                      style={[
+                        styles.suggestionTag,
+                        selectedTags.includes(tag) && styles.suggestionTagSelected
+                      ]}
+                      onPress={() => addTag(tag)}
+                    >
+                      <Text style={[
+                        styles.suggestionTagText,
+                        selectedTags.includes(tag) && styles.suggestionTagTextSelected
+                      ]}>
+                        {getTagEmoji(tag)} {tag}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
 
             {/* All Tags Section */}
             <View style={styles.allTagsSection}>
@@ -1644,7 +3742,6 @@ const ChatScreen = () => {
                       selectedTags.includes(tag.name) && styles.allTagSelected
                     ]}
                     onPress={() => addTag(tag.name)}
-                    disabled={selectedTags.includes(tag.name)}
                   >
                     <Text style={[
                       styles.allTagText,
@@ -1660,15 +3757,13 @@ const ChatScreen = () => {
             {/* Selected tags display */}
             {selectedTags.length > 0 && (
               <View style={styles.selectedTagsDisplay}>
+                <Text style={styles.selectedTagsTitle}>Selected tags:</Text>
                 <View style={styles.selectedTagsList}>
                   {selectedTags.map((tag) => (
-                    <View key={tag} style={styles.selectedTagChip}>
-                      <Text style={styles.selectedTagChipText}>#{tag}</Text>
-                      <TouchableOpacity
-                        onPress={() => removeTag(tag)}
-                        style={styles.removeTagChip}
-                      >
-                        <Ionicons name="close-circle" size={16} color="#666" />
+                    <View key={tag} style={styles.selectedTag}>
+                      <Text style={styles.selectedTagText}>{getTagEmoji(tag)} {tag}</Text>
+                      <TouchableOpacity onPress={() => removeTag(tag)} style={styles.removeTagButton}>
+                        <Text style={styles.removeTag}>×</Text>
                       </TouchableOpacity>
                     </View>
                   ))}
@@ -1676,18 +3771,6 @@ const ChatScreen = () => {
               </View>
             )}
 
-            {/* Bottom action button */}
-            <View style={styles.bottomSheetActions}>
-              <TouchableOpacity
-                style={styles.bottomSheetSaveButton}
-                onPress={finalizePendingMessage}
-              >
-                <Ionicons name="checkmark" size={20} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={styles.bottomSheetSaveText}>
-                  {selectedTags.length > 0 ? `Save with ${selectedTags.length} tag(s)` : 'Save without tags'}
-                </Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </View>
       </Modal>
@@ -1701,28 +3784,7 @@ const ChatScreen = () => {
       >
         <View style={styles.deleteOverlay}>
           <View style={styles.deleteContent}>
-            <View style={styles.deleteHeader}>
-              <Ionicons name="warning" size={32} color="#FF3B30" />
-              <Text style={styles.deleteTitle}>Delete Message</Text>
-            </View>
-            
-            <Text style={styles.deleteText}>Are you sure you want to delete this message?</Text>
-            
-            {messageToDelete && (
-              <View style={styles.deletePreview}>
-                <Text style={styles.deletePreviewText} numberOfLines={3}>
-                  "{messageToDelete.content}"
-                </Text>
-                {messageToDelete.type === 'image' && (
-                  <Text style={styles.deleteFileType}>📷 Image</Text>
-                )}
-                {messageToDelete.type === 'file' && (
-                  <Text style={styles.deleteFileType}>📄 {messageToDelete.filename}</Text>
-                )}
-              </View>
-            )}
-            
-            <Text style={styles.deleteWarning}>This action cannot be undone.</Text>
+            <Text style={styles.deleteTitle}>Delete message?</Text>
             
             <View style={styles.deleteActions}>
               <TouchableOpacity
@@ -1740,13 +3802,15 @@ const ChatScreen = () => {
                 {deleting ? (
                   <Text style={styles.deleteDeleteText}>Deleting...</Text>
                 ) : (
-                  <Text style={styles.deleteDeleteText}>Delete</Text>
+                  <Text style={styles.deleteDeleteText}>Yes</Text>
                 )}
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+
 
       {/* Context Menu Modal */}
       <Modal
@@ -1764,29 +3828,35 @@ const ChatScreen = () => {
             style={[
               styles.contextMenu,
               {
-                top: Math.max(100, Math.min(contextMenuPosition.y - 150, 600)),
-                left: Math.max(20, Math.min(contextMenuPosition.x - 100, 250))
+                top: Math.max(100, Math.min(contextMenuPosition.y + 20, 600)),
+                left: Math.max(20, Math.min(contextMenuPosition.x + 10, 250))
               }
             ]}
           >
             <TouchableOpacity style={styles.contextMenuItem} onPress={handleReply}>
               <Text style={styles.contextMenuText}>Reply</Text>
-              <Ionicons name="arrow-undo" size={20} color="#000" />
+              <Image source={require('../assets/images/reply.png')} style={{ width: 20, height: 20 }} />
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.contextMenuItem} onPress={handleStar}>
-              <Text style={styles.contextMenuText}>Star</Text>
-              <Ionicons name="star-outline" size={20} color="#000" />
+              <Text style={styles.contextMenuText}>
+                {contextMenuMessage?.tags?.includes('starred') ? 'Unstar' : 'Star'}
+              </Text>
+              <Ionicons 
+                name={contextMenuMessage?.tags?.includes('starred') ? 'star' : 'star-outline'} 
+                size={20} 
+                color="#000" 
+              />
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.contextMenuItem} onPress={handleShare}>
               <Text style={styles.contextMenuText}>Share</Text>
-              <Ionicons name="share-outline" size={20} color="#000" />
+              <Image source={require('../assets/images/export.png')} style={{ width: 20, height: 20 }} />
             </TouchableOpacity>
             
             <TouchableOpacity style={styles.contextMenuItem} onPress={handleContextDelete}>
               <Text style={[styles.contextMenuText, { color: '#FF3B30' }]}>Delete</Text>
-              <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+              <Image source={require('../assets/images/trash.png')} style={{ width: 20, height: 20 }} />
             </TouchableOpacity>
             
             <TouchableOpacity style={[styles.contextMenuItem, styles.contextMenuItemLast]} onPress={handleSelect}>
@@ -1796,6 +3866,9 @@ const ChatScreen = () => {
           </View>
         </TouchableOpacity>
       </Modal>
+
+
+      
       </KeyboardAvoidingView>
     </RNSafeAreaView>
   );
@@ -1826,6 +3899,13 @@ const styles = StyleSheet.create({
   },
   clearButton: {
     padding: 5,
+  },
+  clearButtonDisabled: {
+    opacity: 0.5,
+  },
+  loadingSpinner: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   welcomeContainer: {
     paddingHorizontal: 20,
@@ -1874,13 +3954,30 @@ const styles = StyleSheet.create({
   },
   userMessageContainer: {
     alignItems: 'flex-end',
+    position: 'relative',
+  },
+  userMessageWithTag: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
   },
   userMessageContainerSelection: {
     alignItems: 'flex-end',
     marginLeft: 50, // Add space for selection circles
   },
+  messageHighlighted: {
+    backgroundColor: 'rgba(0, 122, 255, 0.1)', // Light blue highlight
+    borderRadius: 8,
+    marginHorizontal: 4,
+    marginVertical: 2,
+  },
+  messageBlurred: {
+    opacity: 0.3,
+    filter: 'blur(2px)',
+  },
   messageBubble: {
-    maxWidth: '80%',
+    width: 322.5,
+    minHeight: 80,
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderRadius: 10,
@@ -1890,7 +3987,6 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 4,
   },
   userMessage: {
-    backgroundColor: '#CCE0FE', // New color for user messages
     borderBottomRightRadius: 4,
   },
   messageText: {
@@ -1908,14 +4004,24 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   botTimestamp: {
-    color: '#999',
-    alignSelf: 'flex-start',
-    marginLeft: 4,
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 0.06,
+    color: '#6C6C6C',
+    textAlign: 'right',
+    alignSelf: 'flex-end',
+    paddingRight: 8,
+    minWidth: 80,
   },
   userTimestamp: {
-    color: '#999',
+    fontSize: 11,
+    lineHeight: 13,
+    letterSpacing: 0.06,
+    color: '#6C6C6C',
+    textAlign: 'right',
     alignSelf: 'flex-end',
-    marginRight: 4,
+    paddingRight: 4,
+    minWidth: 70,
   },
   imageMessage: {
     width: 200,
@@ -1924,17 +4030,33 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   fileMessage: {
+    display: 'flex',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
+    gap: 12,
+    alignSelf: 'stretch',
     padding: 12,
-    backgroundColor: '#f0f0f0',
     borderRadius: 8,
+    backgroundColor: '#DCEAFF',
     marginTop: 8,
   },
-  fileMessageText: {
+  fileIconContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fileInfoContainer: {
     flex: 1,
+    flexDirection: 'column',
+    gap: 6,
+  },
+  fileMessageText: {
+    fontSize: 16,
+    fontWeight: 'bold',
     color: '#000000',
-    marginRight: 8,
+  },
+  fileDetailsText: {
+    fontSize: 14,
+    color: '#666666',
   },
   actionButtonsContainer: {
     flexDirection: 'row',
@@ -1959,21 +4081,22 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   inputContainer: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
+    paddingHorizontal: 0,
+    paddingTop: 0,
+    paddingBottom: 0,
+    borderTopWidth: 0,
   },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    backgroundColor: '#fff', // White background for input box
+    backgroundColor: '#fff',
     borderRadius: 24,
     paddingHorizontal: 4,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: '#E0E0E0', // Subtle border
+    borderColor: '#E0E0E0',
+    marginHorizontal: 16,
+    marginBottom: 12,
   },
   attachmentButton: {
     padding: 8,
@@ -1998,37 +4121,62 @@ const styles = StyleSheet.create({
   tagsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginTop: 8,
+    gap: 4,
     paddingTop: 6,
+    flex: 1,
+    paddingRight: 75, // Space for timestamp (reduced since we have more overall width)
+    minWidth: 0, // Allow shrinking if needed
   },
   tagBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4, // Square corners like in the design
-    marginRight: 6,
+    minWidth: 60,
+    height: 32,
+    paddingTop: 6,
+    paddingRight: 8,
+    paddingBottom: 6,
+    paddingLeft: 8,
+    borderRadius: 8,
     marginBottom: 4,
-    backgroundColor: '#ffffff', // White background like in the design
+    backgroundColor: '#ffffff',
     borderWidth: 1,
     borderColor: '#E0E0E0',
   },
   tagBadgeBot: {
+    height: 32,
+    paddingTop: 6,
+    paddingRight: 8,
+    paddingBottom: 6,
+    paddingLeft: 8,
+    borderRadius: 8,
     backgroundColor: '#ffffff',
     borderColor: '#E0E0E0',
+    flexShrink: 0,
+    minWidth: 80, // Increased minimum width for longer tags
+    maxWidth: 200, // Set reasonable maximum to prevent overflow
   },
   tagBadgeUser: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
     backgroundColor: '#ffffff',
     borderColor: '#E0E0E0',
+    borderWidth: 1,
+    alignSelf: 'flex-start',
+    flexShrink: 0,
+    // Let content determine width naturally
   },
   tagText: {
     fontSize: 14,
     fontWeight: '400',
-    color: '#666666', // Grey color, not bold
+    color: '#4E4E4E', // Grey color, not bold
   },
   tagTextBot: {
     color: '#666666',
   },
   tagTextUser: {
     color: '#666666',
+    fontSize: 14,
+    flexShrink: 0,
+    flexWrap: 'nowrap',
   },
   modalOverlay: {
     flex: 1,
@@ -2057,11 +4205,31 @@ const styles = StyleSheet.create({
   modalCloseButton: {
     padding: 4,
   },
+  uploadLoadingContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: '#F0F8FF',
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  uploadLoadingContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+  },
+  uploadLoadingText: {
+    fontSize: 14,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
   tagInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 20,
     gap: 8,
+    paddingHorizontal: 16,
   },
   tagInput: {
     flex: 1,
@@ -2071,11 +4239,105 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     fontSize: 16,
   },
-  addTagButton: {
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: '#f0f0f0',
+  addTagButtonContainer: {
+    position: 'absolute',
+    left: -40,
+    top: 8,
+    zIndex: 10,
   },
+  addTagButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#007AFF',
+    borderRadius: 6,
+    minWidth: 50,
+  },
+  addTagButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  addTagButtonTextDisabled: {
+    color: '#999',
+  },
+  characterCounter: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  bottomSheetIntentInput: {
+    paddingHorizontal: 20,
+    marginBottom: 24,
+    alignItems: 'stretch',
+  },
+  intentInputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  bottomSheetIntentTextInput: {
+    borderWidth: 1,
+    borderColor: '#EBF3FF',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 16,
+    backgroundColor: '#FAFBFF',
+    color: '#000',
+    textAlign: 'center',
+  },
+  addTagButtonLeft: {
+    alignSelf: 'flex-start',
+    marginRight: 8,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  addTagButtonBottomLeft: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    width: 40,
+    height: 40,
+    padding: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  addTagButtonCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#ffffff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+
+
   predefinedTagsContainer: {
     marginBottom: 20,
   },
@@ -2139,7 +4401,21 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   removeTagButton: {
-    padding: 2,
+    padding: 4,
+    marginLeft: 4,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+  },
+  removeTag: {
+    fontSize: 18,
+    color: '#666',
+    fontWeight: 'bold',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    paddingRight: 40,
+    textAlign: 'center',
+    minWidth: 20,
+    minHeight: 20,
   },
   modalActions: {
     flexDirection: 'row',
@@ -2197,89 +4473,82 @@ const styles = StyleSheet.create({
   },
   deleteOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 20,
   },
   deleteContent: {
     backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 20,
-    width: '90%',
-    maxHeight: '80%',
-  },
-  deleteHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
+    padding: 24,
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 320,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 10,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
   },
   deleteTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#000',
-    marginLeft: 12,
-  },
-  deleteText: {
-    fontSize: 16,
-    color: '#666',
-    marginBottom: 20,
-  },
-  deletePreview: {
-    marginBottom: 20,
-  },
-  deletePreviewText: {
-    fontSize: 16,
-    color: '#000',
-  },
-  deleteFileType: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-  },
-  deleteWarning: {
-    fontSize: 14,
-    color: '#666',
-    marginBottom: 20,
+    fontSize: 20,
+    fontWeight: '500',
+    color: '#1F2937',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 28,
   },
   deleteActions: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     gap: 12,
   },
   deleteCancelButton: {
     flex: 1,
-    padding: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     borderRadius: 12,
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#F3F4F6',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
   deleteCancelText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
+    fontWeight: '500',
+    color: '#374151',
   },
   deleteDeleteButton: {
     flex: 1,
-    padding: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     borderRadius: 12,
-    backgroundColor: '#007AFF',
+    backgroundColor: '#DC2626',
     alignItems: 'center',
   },
   deleteDeleteText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '500',
     color: '#fff',
   },
   deleteButtonDisabled: {
-    backgroundColor: '#f0f0f0',
+    backgroundColor: '#F3F4F6',
   },
   linkPreview: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    padding: 12,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 0,
+    padding: 0,
+    backgroundColor: '#fdfdfd',
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     marginTop: 8,
+    marginLeft: -7,
+    height: 92,
+    marginRight: -7,
     borderWidth: 1,
     borderColor: '#e9ecef',
     shadowColor: '#000',
@@ -2291,23 +4560,34 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
+  linkPreviewTouchable: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flex: 1,
+  },
   linkPreviewImage: {
     width: 80,
-    height: 80,
-    borderRadius: 8,
-    marginRight: 12,
+    height: '100%',
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 0,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     backgroundColor: '#f0f0f0',
+    marginRight: 12,
   },
   linkPreviewContent: {
     flex: 1,
-    justifyContent: 'space-between',
+    padding: 12,
+    paddingLeft: 0,
   },
   linkPreviewTitle: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '400',
     color: '#1a1a1a',
     marginBottom: 4,
-    lineHeight: 20,
+    lineHeight: 18,
+    letterSpacing: -0.08,
+    fontFamily: 'SF Pro Text',
   },
   linkPreviewDescription: {
     fontSize: 14,
@@ -2316,11 +4596,14 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   linkPreviewDomain: {
-    fontSize: 12,
-    color: '#007AFF',
-    fontWeight: '500',
-    textTransform: 'lowercase',
+    fontSize: 11,
+    fontWeight: '400',
+    color: '#6C6C6C',
+    lineHeight: 13,
+    letterSpacing: 0.06,
+    fontFamily: 'SF Pro Text',
   },
+
   // AI-related styles
   headerCenter: {
     flex: 1,
@@ -2362,14 +4645,18 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontStyle: 'italic',
   },
+  aiLoadingAnimation: {
+    width: 60,
+    height: 60,
+    alignSelf: 'center',
+  },
   // Input link preview styles (WhatsApp-style)
   inputLinkPreviewContainer: {
+    paddingTop: 0,
+    paddingBottom: 0,
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#f0f0f0',
-    backgroundColor: '#ffffff',
+    borderTopWidth: 0,
+    backgroundColor: 'transparent',
   },
   linkPreviewLoading: {
     padding: 12,
@@ -2385,61 +4672,88 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   inputLinkPreview: {
+    position: 'relative',
+    marginHorizontal: 0,
+    marginBottom: 0,
+    backgroundColor: '#fdfdfd',
+    borderRadius: 0,
+    borderWidth: 0,
+    borderColor: 'transparent',
+    shadowColor: 'transparent',
+    shadowOffset: {
+      width: 0,
+      height: 0,
+    },
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+
+  inputLinkPreviewCardContent: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#f8f9fa',
+    alignItems: 'stretch',
+    padding: 0,
+    minHeight: 73,
+    backgroundColor: '#fdfdfd',
     borderRadius: 12,
+    marginHorizontal: 0,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: '#e9ecef',
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
   },
+  inputLinkPreviewImage: {
+    width: 73,
+    height: 73,
+    borderTopLeftRadius: 12,
+    borderBottomLeftRadius: 12,
+    backgroundColor: '#d3d3d3',
+    marginRight: 12,
+  },
   inputLinkPreviewContent: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 12,
-  },
-  inputLinkPreviewImage: {
-    width: 60,
-    height: 60,
-    borderRadius: 8,
-    marginRight: 12,
-    backgroundColor: '#f0f0f0',
-  },
-  inputLinkPreviewText: {
-    flex: 1,
-    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingRight: 40,
+    paddingLeft: 0,
+    justifyContent: 'center',
   },
   inputLinkPreviewTitle: {
-    fontSize: 14,
-    fontWeight: '600',
+    fontSize: 13,
+    fontWeight: '400',
     color: '#1a1a1a',
-    marginBottom: 2,
-    lineHeight: 18,
-  },
-  inputLinkPreviewDescription: {
-    fontSize: 12,
-    color: '#666',
     marginBottom: 4,
-    lineHeight: 16,
+    lineHeight: 18,
+    letterSpacing: -0.08,
+    fontFamily: 'SF Pro Text',
   },
   inputLinkPreviewDomain: {
     fontSize: 11,
-    color: '#007AFF',
-    fontWeight: '500',
-    textTransform: 'lowercase',
+    fontWeight: '400',
+    color: '#6C6C6C',
+    lineHeight: 13,
+    letterSpacing: 0.06,
+    fontFamily: 'SF Pro Text',
   },
+
   inputLinkPreviewClose: {
-    padding: 12,
+    position: 'absolute',
+    top: '50%',
+    right: 12,
+    transform: [{ translateY: -11 }],
+    width: 22,
+    height: 22,
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
+    aspectRatio: 1,
+    borderRadius: 1000,
+    borderWidth: 1,
+    borderColor: '#6C6C6C',
+    backgroundColor: '#FFFFFF',
   },
   // Context menu styles
   contextMenuOverlay: {
@@ -2450,25 +4764,28 @@ const styles = StyleSheet.create({
   },
   contextMenu: {
     position: 'absolute',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    paddingVertical: 12,
-    minWidth: 200,
+    display: 'flex',
+    width: 172,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    borderRadius: 8,
+    backgroundColor: '#FAFAFC',
     shadowColor: '#000',
     shadowOffset: {
       width: 0,
-      height: 8,
+      height: 2,
     },
-    shadowOpacity: 0.15,
-    shadowRadius: 16,
-    elevation: 12,
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
   },
   contextMenuItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    width: '100%',
     borderBottomWidth: 0.5,
     borderBottomColor: '#E5E5E7',
   },
@@ -2562,45 +4879,50 @@ const styles = StyleSheet.create({
   },
   // Reply preview styles
   replyPreviewContainer: {
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingTop: 0,
+    paddingBottom: 4,
     borderTopWidth: 1,
     borderTopColor: '#f0f0f0',
     backgroundColor: '#ffffff',
   },
   replyPreview: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#e9ecef',
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
-    shadowColor: '#000',
+    alignItems: 'stretch',
+    backgroundColor: '#ffffff',
+    shadowColor: '#808080',
     shadowOffset: {
       width: 0,
-      height: 1,
+      height: -4,
     },
     shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    shadowRadius: 10,
+    elevation: 3,
+    overflow: 'hidden',
+  },
+  replyPreviewBlueBar: {
+    width: 4,
+    backgroundColor: '#007AFF',
   },
   replyPreviewContent: {
     flex: 1,
-    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 8,
+    paddingLeft: 12,
   },
   replyPreviewHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 6,
+    marginBottom: 4,
     gap: 6,
   },
   replyPreviewLabel: {
-    fontSize: 12,
-    color: '#007AFF',
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '400',
+    color: '#0065FF',
+    lineHeight: 18,
+    letterSpacing: -0.08,
+    marginBottom: 4,
   },
   replyPreviewText: {
     fontSize: 14,
@@ -2614,23 +4936,29 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   replyPreviewClose: {
-    padding: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#f0f0f0',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  // New reply preview styles for image-left layout
-  replyPreviewImage: {
-    width: 60,
-    height: 60,
-    borderRadius: 8,
     marginRight: 12,
+    alignSelf: 'center',
+    marginTop: 8,
+  },
+  // New reply preview styles for image-right layout (matching link preview)
+  replyPreviewImage: {
+    width: 70,
+    height: 70,
+    borderRadius: 2,
+    marginLeft: 12,
     backgroundColor: '#f0f0f0',
   },
   replyPreviewFileIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 8,
-    marginRight: 12,
+    width: 70,
+    height: 70,
+    borderRadius: 2,
+    marginLeft: 12,
     backgroundColor: '#f0f0f0',
     justifyContent: 'center',
     alignItems: 'center',
@@ -2638,19 +4966,184 @@ const styles = StyleSheet.create({
   replyPreviewTextContent: {
     flex: 1,
     justifyContent: 'center',
-    paddingRight: 12,
   },
   replyPreviewTitle: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
-    color: '#000',
-    marginBottom: 4,
-    lineHeight: 20,
+    color: '#1a1a1a',
+    marginBottom: 2,
+    lineHeight: 18,
   },
   replyPreviewDomain: {
-    fontSize: 14,
-    color: '#666',
-    fontWeight: '400',
+    fontSize: 11,
+    color: '#007AFF',
+    fontWeight: '500',
+    textTransform: 'lowercase',
+  },
+  // Bot reply preview styles (for AI responses that are replies)
+  botReplyPreview: {
+    marginBottom: 8,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  botReplyPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+    gap: 4,
+  },
+  botReplyPreviewLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#007AFF',
+    lineHeight: 14,
+  },
+  botReplyPreviewContainer: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    backgroundColor: '#ffffff',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  botReplyPreviewBlueBar: {
+    width: 3,
+    backgroundColor: '#007AFF',
+  },
+  botReplyPreviewContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 6,
+    paddingLeft: 8,
+  },
+  botReplyPreviewTextContent: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  botReplyPreviewTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: 1,
+    lineHeight: 16,
+  },
+  botReplyPreviewDomain: {
+    fontSize: 10,
+    color: '#007AFF',
+    fontWeight: '500',
+  },
+  botReplyPreviewImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    marginLeft: 8,
+    backgroundColor: '#f0f0f0',
+  },
+  botReplyPreviewFileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    marginLeft: 8,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // User reply preview styles (for user messages that are replies)
+  userReplyPreview: {
+    marginBottom: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 8,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  userReplyPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+    gap: 4,
+  },
+  userReplyPreviewLabel: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#FFFFFF',
+    lineHeight: 14,
+    opacity: 0.9,
+  },
+  userReplyPreviewContainer: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  userReplyPreviewBar: {
+    width: 3,
+    backgroundColor: '#FFFFFF',
+    opacity: 0.8,
+  },
+  userReplyPreviewContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 6,
+    paddingLeft: 8,
+  },
+  userReplyPreviewTextContent: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  userReplyPreviewTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 1,
+    lineHeight: 16,
+    opacity: 0.95,
+  },
+  userReplyPreviewDomain: {
+    fontSize: 10,
+    color: '#FFFFFF',
+    fontWeight: '500',
+    opacity: 0.8,
+  },
+  userReplyPreviewImage: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    marginLeft: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  userReplyPreviewFileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 4,
+    marginLeft: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Referenced content styles (for showing actual content in bot replies)
+  referencedContentContainer: {
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#e9ecef',
+    paddingTop: 12,
+  },
+  referencedImageContainer: {
+    marginTop: 8,
+  },
+  referencedImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    backgroundColor: '#f0f0f0',
+  },
+  referencedFileContainer: {
+    marginTop: 8,
   },
   // Main content area for reply preview
   replyPreviewMainContent: {
@@ -2660,17 +5153,21 @@ const styles = StyleSheet.create({
   },
   // Link message container styles
   linkMessageContainer: {
-    marginTop: 8,
+    marginTop: -10,
+    borderRadius: 8,
   },
   linkUrlContainer: {
-    marginTop: 8,
+    marginTop: 4,
     paddingTop: 8,
   },
   linkUrlText: {
-    fontSize: 14,
-    color: '#000000',
-    textDecorationLine: 'underline',
+    fontSize: 13,
     fontWeight: '400',
+    color: '#080808',
+    lineHeight: 18,
+    letterSpacing: -0.08,
+    fontFamily: 'SF Pro Text',
+    textDecorationLine: 'underline',
   },
   // Typing indicator styles
   typingIndicator: {
@@ -2693,8 +5190,8 @@ const styles = StyleSheet.create({
   },
   bottomSheetContent: {
     backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderTopLeftRadius: 10,
+    borderTopRightRadius: 10,
     paddingBottom: 34, // Safe area padding
     maxHeight: '80%',
   },
@@ -2715,24 +5212,42 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
   },
   bottomSheetTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '600',
-    color: '#000',
+    color: '#000000',
+    lineHeight: 25,
+    letterSpacing: -0.45,
   },
   bottomSheetCloseButton: {
-    padding: 4,
+    padding: 8,
+    backgroundColor: '#007AFF',
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   bottomSheetTagInput: {
     paddingHorizontal: 20,
     marginBottom: 24,
+    alignItems: 'center',
   },
   bottomSheetInput: {
-    padding: 16,
+    width: 213,
+    height: 44,
+    paddingTop: 7,
+    paddingRight: 16,
+    paddingBottom: 7,
+    paddingLeft: 16,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 12,
+    borderColor: '#EBF3FF',
+    borderRadius: 100,
     fontSize: 16,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: '#FDFDFD',
     color: '#111827',
   },
   suggestionsSection: {
@@ -2753,24 +5268,29 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   suggestionTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    height: 32,
+    paddingTop: 6,
+    paddingRight: 12,
+    paddingBottom: 6,
+    paddingLeft: 12,
     borderWidth: 1,
-    borderColor: '#D1FAE5',
-    borderRadius: 20,
-    backgroundColor: '#ECFDF5',
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   suggestionTagSelected: {
-    backgroundColor: '#10B981',
-    borderColor: '#10B981',
+    backgroundColor: '#EBF3FF',
+    borderColor: '#99C1FE',
   },
   suggestionTagText: {
     fontSize: 14,
-    color: '#065F46',
+    color: '#374151',
     fontWeight: '500',
   },
   suggestionTagTextSelected: {
-    color: '#fff',
+    color: '#1E40AF',
   },
   allTagsSection: {
     paddingHorizontal: 20,
@@ -2782,16 +5302,21 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   allTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    minHeight: 32,
+    paddingTop: 6,
+    paddingRight: 12,
+    paddingBottom: 6,
+    paddingLeft: 12,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    borderRadius: 20,
-    backgroundColor: '#F9FAFB',
+    borderColor: '#CCE0FE',
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   allTagSelected: {
-    backgroundColor: '#3B82F6',
-    borderColor: '#3B82F6',
+    backgroundColor: '#EBF3FF',
+    borderColor: '#99C1FE',
   },
   allTagText: {
     fontSize: 14,
@@ -2799,7 +5324,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   allTagTextSelected: {
-    color: '#fff',
+    color: '#1E40AF',
   },
   selectedTagsDisplay: {
     paddingHorizontal: 20,
@@ -2845,6 +5370,171 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  // Clearing messages overlay styles
+  clearingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(243, 245, 252, 0.95)',
+    zIndex: 1000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  clearingLoader: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    minWidth: 200,
+  },
+  clearingSpinner: {
+    marginBottom: 16,
+  },
+  clearingText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FF3B30',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  clearingProgress: {
+    width: 150,
+    height: 4,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  clearingProgressBar: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#FF3B30',
+    borderRadius: 2,
+  },
+  clearingProgressText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#666',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  // Loading messages overlay styles
+  loadingOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(243, 245, 252, 0.95)',
+    zIndex: 1000,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  messageLoadingLoader: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    minWidth: 200,
+  },
+  messageLoadingSpinner: {
+    marginBottom: 16,
+  },
+  messageLoadingText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#007AFF',
+    textAlign: 'center',
+  },
+  messageFooter: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'flex-end',
+    marginTop: 8,
+    paddingHorizontal: 2,
+    position: 'relative',
+    minHeight: 35, // Ensure enough height for tags
+  },
+  timestampContainer: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 70, // Fixed width for timestamp
+    backgroundColor: 'transparent',
+  },
+  // Tag suggestions inline styles
+  tagSuggestionsContent: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+    marginHorizontal: 16,
+  },
+  tagSuggestionItem: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255, 255, 255, 0.70)',
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tagSuggestionItemSelected: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#EAF2FE',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#99C1FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tagSuggestionText: {
+    fontSize: 15,
+    color: '#171717',
+    fontWeight: '400',
+    lineHeight: 20,
+    letterSpacing: -0.23,
+    fontFamily: 'SF Pro',
+  },
+  tagSuggestionTextSelected: {
+    fontSize: 15,
+    color: '#171717',
+    fontWeight: '400',
+    lineHeight: 20,
+    letterSpacing: -0.23,
+    fontFamily: 'SF Pro',
+  },
+  customTagItem: {
+    backgroundColor: 'rgba(255, 255, 255, 0.70)',
+    borderWidth: 0,
+  },
+  customTagText: {
+    fontSize: 15,
+    color: '#171717',
+    fontWeight: '400',
+    lineHeight: 20,
+    letterSpacing: -0.23,
+    fontFamily: 'SF Pro',
   },
 });
 

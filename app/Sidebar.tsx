@@ -8,6 +8,7 @@ interface SidebarProps {
   userName: string;
   userEmail: string;
   userAvatarUrl: string;
+  onMenuItemPress?: () => void; // Add callback to close sidebar when menu item is pressed
 }
 
 type MenuItem =
@@ -24,8 +25,15 @@ const menuItems: MenuItem[] = [
   { icon: (color: string) => <Feather name="help-circle" size={20} color={color} />, label: 'Help' },
 ];
 
-export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarProps) {
+export default function Sidebar({ userName, userEmail, userAvatarUrl, onMenuItemPress }: SidebarProps) {
   const router = useRouter();
+  
+  const handleMenuItemPress = (route?: string) => {
+    if (route) {
+      router.push(route as any);
+    }
+    onMenuItemPress?.(); // Close the sidebar
+  };
   return (
     <SafeAreaView style={styles.container}>
       {/* Profile Card */}
@@ -36,7 +44,7 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
         />
         <View style={styles.profileTextCol}>
           <Text style={styles.profileName}>Hi {userName}</Text>
-          <Text style={styles.profileEmail}>{userEmail}</Text>
+          <Text style={styles.profileEmail} numberOfLines={1} adjustsFontSizeToFit>{userEmail}</Text>
         </View>
         <Ionicons name="chevron-forward" size={20} color="#B0B0B0" style={{ marginLeft: 'auto' }} />
       </View>
@@ -50,12 +58,9 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
           style={styles.upgradeCard}
         >
           <View style={styles.upgradeLeftBlock}>
-            <View style={styles.upgradeCircle}>
-              <Ionicons name="add" size={20} color="#4285F4" />
-            </View>
-            <View>
+            <View style={styles.upgradeTextContainer}>
               <Text style={styles.upgradeTitle}>Upgrade to Blii Pro</Text>
-              <Text style={styles.upgradeSubtitle}>Get full access to AI, unlimited saves, smart search and more.</Text>
+              <Text style={[styles.upgradeSubtitle, { flexWrap: 'wrap', maxWidth: 160 }]}>Get full access to AI, unlimited saves, smart search and more.</Text>
             </View>
           </View>
           <Ionicons name="chevron-forward" size={20} color="#fff" />
@@ -64,28 +69,28 @@ export default function Sidebar({ userName, userEmail, userAvatarUrl }: SidebarP
 
       {/* Menu List */}
       <View style={{ marginTop: 8, flex: 1 }}>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress('/all-saves')}>
           <Ionicons name="bookmark-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>All Saves</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress()}>
           <Ionicons name="star-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Starred</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress()}>
           <Ionicons name="laptop-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Linked devices</Text>
         </TouchableOpacity>
         <View style={styles.divider} />
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => router.push('/settings')}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress('/settings')}>
           <Ionicons name="settings-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Settings</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => router.push('/recently-deleted')}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress('/recently-deleted')}>
           <Ionicons name="trash-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Recently Deleted</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+        <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={() => handleMenuItemPress()}>
           <Ionicons name="help-circle-outline" size={20} color="#222" />
           <Text style={styles.menuLabel}>Help</Text>
         </TouchableOpacity>
@@ -132,6 +137,8 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     justifyContent: 'center',
     marginLeft: 12,
+    flex: 1,
+    marginRight: 8, // Add margin to prevent overlap with chevron
   },
   profileName: {
     fontSize: 16,
@@ -146,6 +153,8 @@ const styles = StyleSheet.create({
     color: '#888',
     fontFamily: 'System',
     lineHeight: 18,
+    flexShrink: 1,
+    minWidth: 0,
   },
   upgradeCard: {
     borderRadius: 10,
@@ -174,6 +183,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 10,
   },
+  upgradeTextContainer: {
+    flex: 1,
+    marginRight: 8, // Add margin to prevent overlap with chevron
+  },
   upgradeTitle: {
     fontSize: 14,
     fontWeight: '600',
@@ -188,7 +201,7 @@ const styles = StyleSheet.create({
     fontFamily: 'System',
     lineHeight: 14,
     marginTop: 1,
-    maxWidth: 140,
+    flexWrap: 'wrap', // Allow text to wrap
   },
   divider: {
     marginTop: 18,
@@ -207,9 +220,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   menuLabel: {
+    color: '#171717',
+    fontFamily: 'SF Pro',
     fontSize: 15,
+    fontStyle: 'normal',
     fontWeight: '400',
-    color: '#222',
-    fontFamily: 'System',
+    lineHeight: 20,
+    letterSpacing: -0.23,
+    // font-feature-settings is not supported in React Native, so it's omitted
   },
 });

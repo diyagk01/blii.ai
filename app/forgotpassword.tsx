@@ -12,6 +12,7 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
+import SupabaseAuthService from '../services/supabase-auth';
 
 const ForgotPasswordScreen = () => {
 const router = useRouter();
@@ -34,31 +35,17 @@ const router = useRouter();
     setIsLoading(true);
     
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      Alert.alert(
-        'Email Sent',
-        'Password reset instructions have been sent to your email address.',
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              // Navigate back to login or previous screen
-              console.log('Navigate back to login');
-            }
-          }
-        ]
-      );
-    } catch (error) {
-      Alert.alert('Error', 'Failed to send reset email. Please try again.');
+      await SupabaseAuthService.getInstance().requestPasswordReset(email);
+      router.push({ pathname: '/forgotpasswordconfirmation', params: { email } });
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to send reset email. Please try again.');
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleBackPress = () => {
-    console.log('Navigate back to login');
+    router.back();
   };
 
   const handleLogIn = () => {

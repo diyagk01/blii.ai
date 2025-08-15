@@ -25,6 +25,8 @@ const LoginScreen = () => {
   const [rememberMe, setRememberMe] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [appleLoading, setAppleLoading] = useState(false);
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({
@@ -62,9 +64,9 @@ const LoginScreen = () => {
 
   const handleGoogleLogin = async () => {
     try {
-      setLoading(true);
+      setGoogleLoading(true);
       
-      // Sign in with Google using Supabase AuthService
+      // i with Google using Supabase AuthService
       const userInfo = await SupabaseAuthService.getInstance().signInWithGoogle();
       console.log('Google Sign-In Success:', userInfo);
 
@@ -74,13 +76,13 @@ const LoginScreen = () => {
       console.error('Google Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Google');
     } finally {
-      setLoading(false);
+      setGoogleLoading(false);
     }
   };
 
   const handleAppleLogin = async () => {
     try {
-      setLoading(true);
+      setAppleLoading(true);
       
       // Check if Apple Sign In is available
       const isAvailable = await SupabaseAuthService.getInstance().isAppleAuthenticationAvailable();
@@ -99,7 +101,7 @@ const LoginScreen = () => {
       console.error('Apple Sign-In Error:', error);
       Alert.alert('Error', error.message || 'Failed to sign in with Apple');
     } finally {
-      setLoading(false);
+      setAppleLoading(false);
     }
   };
 
@@ -220,26 +222,32 @@ const LoginScreen = () => {
           {/* Social Login Buttons */}
           <View style={styles.socialButtonsContainer}>
             <TouchableOpacity 
-              style={[styles.socialButton, loading && styles.socialButtonDisabled]} 
+              style={[styles.socialButton, googleLoading && styles.socialButtonDisabled]} 
               onPress={handleGoogleLogin}
-              disabled={loading}
+              disabled={googleLoading}
             >
-              {loading ? (
+              {googleLoading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Image source={require('../assets/images/Frame 36695.png')} style={styles.socialButtonImage} />
+                <View style={styles.googleButtonContent}>
+                  <Image source={require('../assets/images/Google.png')} style={styles.googleLogo} />
+                  <Text style={styles.googleButtonText}>Google</Text>
+                </View>
               )}
             </TouchableOpacity>
             
             <TouchableOpacity 
-              style={[styles.socialButton, loading && styles.socialButtonDisabled]} 
+              style={[styles.socialButton, appleLoading && styles.socialButtonDisabled]} 
               onPress={handleAppleLogin}
-              disabled={loading}
+              disabled={appleLoading}
             >
-              {loading ? (
+              {appleLoading ? (
                 <ActivityIndicator size="small" color="#000" />
               ) : (
-                <Image source={require('../assets/images/Frame 36695 (1).png')} style={styles.socialButtonImage} />
+                <View style={styles.appleButtonContent}>
+                  <Image source={require('../assets/images/Apple Logo.png')} style={styles.appleLogo} />
+                  <Text style={styles.appleButtonText}>Apple</Text>
+                </View>
               )}
             </TouchableOpacity>
           </View>
@@ -440,6 +448,42 @@ const styles = StyleSheet.create({
   },
   signUpLink: {
     color: '#007AFF',
+    fontWeight: '500',
+  },
+  loadingContainer: {
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  googleButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  googleLogo: {
+    width: 20,
+    height: 20,
+    marginRight: 8,
+  },
+  googleButtonText: {
+    fontSize: 16,
+    color: '#000',
+    fontWeight: '500',
+  },
+  appleButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  appleLogo: {
+    width: 20,
+    height: 20,
+    marginRight: 8,
+  },
+  appleButtonText: {
+    fontSize: 16,
+    color: '#000',
     fontWeight: '500',
   },
 });
