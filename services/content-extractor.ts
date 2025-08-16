@@ -8,7 +8,6 @@ export interface ExtractedContent {
   publish_date?: string;
   summary?: string;
   full_text?: string;
-  preview_image?: string; // For PDF preview images
   metadata?: any;
 }
 
@@ -61,14 +60,23 @@ export class ContentExtractor {
   }
 
   /**
-   * Extract content from PDF files using enhanced service with OCR capabilities
+   * Extract content from PDF files using Docling as primary method
    */
   async extractPDFContent(filePath: string, fileName: string): Promise<ExtractedContent> {
     try {
-      console.log('📄 Processing PDF with enhanced service (PyPDF2 + OCR):', fileName);
+      console.log('📄 Processing PDF with Docling as primary method:', fileName);
       
-      // First try the new enhanced PDF service
+      // Primary method: Use Docling service
       try {
+        console.log('🐍 Attempting Docling extraction...');
+        return await this.extractWithDoclingService(filePath, fileName);
+      } catch (doclingError) {
+        console.warn('⚠️ Docling extraction failed, trying enhanced service:', doclingError);
+      }
+
+      // Fallback method: Use enhanced PDF service
+      try {
+        console.log('🔄 Trying enhanced PDF service as fallback...');
         const enhancedServiceUrl = 'https://blii-pdf-extraction-production.up.railway.app';
         
         // Check if enhanced service is available
@@ -110,17 +118,18 @@ export class ContentExtractor {
             if (result.success) {
               console.log(`✅ Enhanced PDF extraction successful using ${result.method}`);
               
-              // Clean the extracted content
+              // Validate and clean the extracted content
+              const validatedContent = this.validateAndCleanExtractedText(result.content);
+              
               const cleanedContent = {
                 title: result.title || fileName.replace('.pdf', ''),
-                content: result.content,
-                full_text: result.content,
-                summary: this.generateSummaryFromContent(result.content),
-                preview_image: result.preview_image, // Include the preview image
+                content: validatedContent,
+                full_text: validatedContent,
+                summary: this.generateSummaryFromContent(validatedContent),
                 metadata: {
                   ...result.metadata,
                   extractionMethod: result.method,
-                  confidence: 0.95,
+                  confidence: 0.90,
                   extractedAt: new Date().toISOString(),
                   wordCount: result.word_count,
                   pageCount: result.page_count
@@ -132,58 +141,29 @@ export class ContentExtractor {
           }
         }
       } catch (enhancedError) {
-        console.warn('⚠️ Enhanced service failed, trying fallback methods:', enhancedError);
+        console.warn('⚠️ Enhanced service failed, trying PDFKit:', enhancedError);
       }
 
-      // For local files, prioritize PDFKit for better performance
+      // Final fallback: Use PDFKit only for local files
       if (filePath.startsWith('file://')) {
         try {
-          console.log('📄 Using PDFKit for local file extraction...');
+          console.log('📄 Using PDFKit as final fallback for local file...');
           const { pdfKitExtractor } = await import('./pdfkit-extractor');
           const result = await pdfKitExtractor.extractPDFContent(filePath, fileName);
           
           if (result.success && result.content) {
             console.log(`✅ PDF extraction completed using PDFKit ${result.extractionMethod} method`);
-            return result.content;
-          }
-        } catch (pdfKitError) {
-          console.warn('⚠️ PDFKit extraction failed, trying enhanced extractor:', pdfKitError);
-        }
-      }
-
-      // Fallback to enhanced content extractor (for remote URLs or if PDFKit fails)
-      try {
-        const { enhancedContentExtractor } = await import('./enhanced-content-extractor');
-        const result = await enhancedContentExtractor.extractPDFContent(filePath, fileName);
-        
-        if (result.success && result.content) {
-          console.log(`✅ PDF extraction completed using enhanced ${result.method} method`);
-          
-          // Clean the extracted content to prevent database issues
-          const cleanedContent = {
-            ...result.content,
-            content: this.cleanTextForDatabase(result.content.content),
-            full_text: this.cleanTextForDatabase(result.content.full_text || result.content.content),
-            title: this.cleanTextForDatabase(result.content.title),
-            summary: this.cleanTextForDatabase(result.content.summary || '')
-          };
-          
-          return cleanedContent;
-        }
-      } catch (enhancedError) {
-        console.warn('⚠️ Enhanced extraction failed, trying PDFKit extractor:', enhancedError);
-      }
-
-      // Final fallback to local PDFKit extractor (for remote URLs)
-      if (!filePath.startsWith('file://')) {
-        try {
-          console.log('📄 Falling back to PDFKit extractor...');
-          const { pdfKitExtractor } = await import('./pdfkit-extractor');
-          const result = await pdfKitExtractor.extractPDFContent(filePath, fileName);
-          
-          if (result.success && result.content) {
-            console.log(`✅ PDF extraction completed using PDFKit ${result.extractionMethod} method`);
-            return result.content;
+            
+            // Validate and clean the extracted content
+            const validatedContent = {
+              ...result.content,
+              content: this.validateAndCleanExtractedText(result.content.content),
+              full_text: this.validateAndCleanExtractedText(result.content.full_text || result.content.content),
+              title: this.validateAndCleanExtractedText(result.content.title),
+              summary: this.validateAndCleanExtractedText(result.content.summary || '')
+            };
+            
+            return validatedContent;
           }
         } catch (pdfKitError) {
           console.error('❌ PDFKit extraction also failed:', pdfKitError);
@@ -204,15 +184,20 @@ export class ContentExtractor {
     try {
       console.log('🐍 Calling Docling Python service for:', fileName);
       
-      const doclingServiceUrl = 'https://blii-docling-service.onrender.com';
+      // Import and use the configured service URL
+      const { ACTIVE_DOCLING_SERVICE, FALLBACK_DOCLING_SERVICES } = await import('../config/service-urls');
+      const doclingServiceUrl = ACTIVE_DOCLING_SERVICE;
       
-      // Check if Docling service is running
+      // Check if Docling service is running with fallback support
+      let serviceAvailable = false;
+      let activeServiceUrl = doclingServiceUrl;
+      
+      // Try the primary service first
       try {
-        // Create a timeout controller for React Native compatibility
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout for cloud services
         
-        const healthResponse = await fetch(`${doclingServiceUrl}/health`, {
+        const healthResponse = await fetch(`${activeServiceUrl}/health`, {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal
@@ -220,26 +205,61 @@ export class ContentExtractor {
         
         clearTimeout(timeoutId);
         
-        if (!healthResponse.ok) {
-          throw new Error('Docling service health check failed');
+        if (healthResponse.ok) {
+          const healthData = await healthResponse.json();
+          if (healthData.docling_available) {
+            serviceAvailable = true;
+            console.log('✅ Primary Docling service is healthy and ready');
+          }
         }
+      } catch (primaryError) {
+        console.warn('⚠️ Primary Docling service health check failed:', primaryError);
+      }
+      
+      // If primary service failed, try fallback services
+      if (!serviceAvailable) {
+        console.log('🔄 Trying fallback Docling services...');
         
-        const healthData = await healthResponse.json();
-        if (!healthData.docling_available) {
-          throw new Error('Docling not available in service');
+        for (const fallbackUrl of FALLBACK_DOCLING_SERVICES) {
+          if (fallbackUrl === activeServiceUrl) continue; // Skip if it's the same as primary
+          
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            
+            const healthResponse = await fetch(`${fallbackUrl}/health`, {
+              method: 'GET',
+              headers: { 'Content-Type': 'application/json' },
+              signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            if (healthResponse.ok) {
+              const healthData = await healthResponse.json();
+              if (healthData.docling_available) {
+                activeServiceUrl = fallbackUrl;
+                serviceAvailable = true;
+                console.log(`✅ Fallback Docling service is healthy: ${fallbackUrl}`);
+                break;
+              }
+            }
+          } catch (fallbackError) {
+            console.warn(`⚠️ Fallback service ${fallbackUrl} failed:`, fallbackError);
+          }
         }
-        
-        console.log('✅ Docling service is healthy and ready');
-      } catch (healthError) {
-        console.error('❌ Docling service health check failed:', healthError);
-        throw new Error(`Docling service unavailable: ${healthError}`);
+      }
+      
+      if (!serviceAvailable) {
+        throw new Error('No Docling service available. All services are down.');
       }
       
       // Call extraction endpoint
       const controller2 = new AbortController();
-      const timeoutId2 = setTimeout(() => controller2.abort(), 60000); // 60 second timeout for PDF processing
+      const timeoutId2 = setTimeout(() => controller2.abort(), 120000); // 2 minute timeout for PDF processing
       
-      const extractResponse = await fetch(`${doclingServiceUrl}/extract`, {
+      console.log(`📤 Sending extraction request to Docling service: ${activeServiceUrl}`);
+      const extractResponse = await fetch(`${activeServiceUrl}/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -263,31 +283,44 @@ export class ContentExtractor {
         throw new Error(`Docling extraction failed: ${result.error}`);
       }
       
+      // Validate the extracted content
+      if (!result.content || typeof result.content !== 'string') {
+        throw new Error('Docling returned invalid content format');
+      }
+      
+      // Clean and validate the extracted content
+      const cleanedContent = this.validateAndCleanExtractedText(result.content);
+      const cleanedTitle = this.validateAndCleanExtractedText(result.title || fileName.replace('.pdf', ''));
+      
       // Convert Docling result to ExtractedContent format
       const extractedContent: ExtractedContent = {
-        title: result.title || fileName.replace('.pdf', ''),
-        content: result.content, // This is the markdown content from Docling
-        full_text: result.raw_text || result.content,
-        summary: this.generateSummaryFromContent(result.content),
-        preview_image: result.preview_image, // Include the preview image
+        title: cleanedTitle,
+        content: cleanedContent,
+        full_text: cleanedContent,
+        summary: this.generateSummaryFromContent(cleanedContent),
         metadata: {
           fileType: 'pdf',
           fileName,
-          extractionMethod: 'docling',
+          extractionMethod: 'docling_cloud',
           extractedAt: new Date().toISOString(),
           ...result.metadata,
           confidence: result.extraction_confidence || 0.95,
-          doclingVersion: 'latest'
+          doclingVersion: 'latest',
+          wordCount: result.metadata?.word_count || cleanedContent.split(' ').length,
+          pageCount: result.metadata?.page_count || 0,
+          preview_image: result.preview_image, // Store preview image in metadata
+          serviceUrl: activeServiceUrl // Track which service was used
         }
       };
       
       console.log('✅ Docling extraction successful:', {
         title: extractedContent.title,
         contentLength: extractedContent.content.length,
-        wordCount: result.metadata?.word_count || 0,
-        pages: result.metadata?.page_count || 0,
+        wordCount: extractedContent.metadata.wordCount,
+        pages: extractedContent.metadata.pageCount,
         hasTables: result.metadata?.has_tables || false,
-        hasImages: result.metadata?.has_images || false
+        hasImages: result.metadata?.has_images || false,
+        serviceUrl: activeServiceUrl
       });
       
       return extractedContent;
@@ -312,6 +345,48 @@ export class ContentExtractor {
     
     // Fallback to first 200 characters
     return content.substring(0, 200).trim() + (content.length > 200 ? '...' : '');
+  }
+
+  /**
+   * Validate and clean extracted text to detect corrupted content
+   */
+  private validateAndCleanExtractedText(text: string): string {
+    if (!text) return '';
+    
+    // Check for corrupted binary data patterns
+    const corruptedPatterns = [
+      /[^\x00-\x7F]{10,}/g, // Long sequences of non-ASCII characters
+      /[^\x20-\x7E]{20,}/g, // Long sequences of non-printable characters
+      /[^\w\s\.,!?;:'"()-]{50,}/g, // Long sequences of unusual characters
+      /\0{3,}/g, // Multiple null characters
+      /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]{5,}/g, // Multiple control characters
+    ];
+    
+    // Check if content appears to be corrupted
+    const isCorrupted = corruptedPatterns.some(pattern => pattern.test(text));
+    
+    if (isCorrupted) {
+      console.warn('⚠️ Detected corrupted PDF content, attempting to clean...');
+      
+      // Try to extract readable text by removing corrupted parts
+      let cleanedText = text
+        .replace(/\0/g, '') // Remove null characters
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
+        .replace(/[^\x20-\x7E]{10,}/g, ' ') // Replace long non-printable sequences with spaces
+        .replace(/\s+/g, ' ') // Normalize whitespace
+        .trim();
+      
+      // If still corrupted, return a fallback message
+      if (cleanedText.length < 50 || /[^\x20-\x7E]{20,}/.test(cleanedText)) {
+        console.error('❌ PDF content is severely corrupted, using fallback');
+        return 'PDF content extraction failed. The document may be corrupted or password-protected.';
+      }
+      
+      return cleanedText;
+    }
+    
+    // Clean text for database storage
+    return this.cleanTextForDatabase(text);
   }
 
   /**
@@ -345,11 +420,26 @@ export class ContentExtractor {
    */
   async extractFileContent(filePath: string, fileType: string, fileName?: string): Promise<ExtractedContent> {
     try {
-      console.log('� Extracting file content from:', filePath, 'Type:', fileType);
+      console.log('📄 Extracting file content from:', filePath, 'Type:', fileType);
       
       // Handle PDF files specifically
       if (fileType.toLowerCase().includes('pdf') || fileName?.toLowerCase().endsWith('.pdf')) {
-        return await this.extractPDFContent(filePath, fileName || 'document.pdf');
+        console.log('📄 Detected PDF file, using PDF extraction...');
+        const result = await this.extractPDFContent(filePath, fileName || 'document.pdf');
+        
+        // Additional validation before returning
+        if (!result.content || result.content.length < 10) {
+          console.warn('⚠️ Extracted content is too short, may be corrupted');
+          throw new Error('Extracted content is too short or corrupted');
+        }
+        
+        console.log('✅ PDF extraction completed successfully:', {
+          title: result.title,
+          contentLength: result.content.length,
+          wordCount: result.content.split(' ').length
+        });
+        
+        return result;
       }
       
       // Handle other file types (placeholder for future implementation)
@@ -386,6 +476,51 @@ export class ContentExtractor {
     } catch (error) {
       console.error('❌ Test extraction failed:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Test Docling service connectivity and functionality
+   */
+  async testDoclingService(): Promise<boolean> {
+    try {
+      console.log('🧪 Testing Docling service connectivity...');
+      
+      // Import and use the configured service URL
+      const { ACTIVE_DOCLING_SERVICE, FALLBACK_DOCLING_SERVICES } = await import('../config/service-urls');
+      const doclingServiceUrl = ACTIVE_DOCLING_SERVICE;
+      
+      // Test health endpoint
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      const healthResponse = await fetch(`${doclingServiceUrl}/health`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!healthResponse.ok) {
+        console.error('❌ Docling service health check failed:', healthResponse.status);
+        return false;
+      }
+      
+      const healthData = await healthResponse.json();
+      console.log('✅ Docling service health check passed:', healthData);
+      
+      if (!healthData.docling_available) {
+        console.error('❌ Docling not available in service');
+        return false;
+      }
+      
+      console.log('✅ Docling service is ready for extraction');
+      return true;
+      
+    } catch (error) {
+      console.error('❌ Docling service test failed:', error);
+      return false;
     }
   }
 }

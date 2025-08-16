@@ -6,7 +6,7 @@ export const DOCLING_SERVICE_URLS = {
   railway: 'https://blii-pdf-extraction-production.up.railway.app',
   
   // Render (recommended alternative)
-  render: 'https://blii-docling-service.onrender.com',
+  render: 'https://srv-d2daqq3e5dus73fpn3l0.onrender.com',
   
   // Heroku
   heroku: 'https://blii-docling-service.herokuapp.com',
@@ -25,7 +25,7 @@ export const DOCLING_SERVICE_URLS = {
 };
 
 // Change this to switch platforms easily
-export const ACTIVE_DOCLING_SERVICE = DOCLING_SERVICE_URLS.railway;
+export const ACTIVE_DOCLING_SERVICE = DOCLING_SERVICE_URLS.render;
 
 // Fallback URLs for redundancy
 export const FALLBACK_DOCLING_SERVICES = [
