@@ -8,7 +8,7 @@ export const SERVICE_URLS = {
   
   // Production (Render)
   production: {
-    docling: 'https://blii-docling-service.onrender.com',
+    docling: 'https://blii-ai.onrender.com',
     enhanced: 'https://blii-pdf-extraction-production.up.railway.app'
   }
 };

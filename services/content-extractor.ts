@@ -87,8 +87,8 @@ export class ContentExtractor {
     try {
       console.log('🐍 Calling local Docling Python service for:', fileName);
       
-      // Use local Docling service
-      const doclingServiceUrl = 'http://localhost:8080';
+      // Use deployed Docling service
+      const doclingServiceUrl = 'https://blii-ai.onrender.com';
       
       // Check if local Docling service is running
       try {
@@ -355,7 +355,7 @@ export class ContentExtractor {
     try {
       console.log('🧪 Testing local Docling service connectivity...');
       
-      const doclingServiceUrl = 'http://localhost:8080';
+      const doclingServiceUrl = 'https://blii-ai.onrender.com';
       
       // Test health endpoint
       const controller = new AbortController();

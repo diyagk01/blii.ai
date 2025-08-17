@@ -9,18 +9,10 @@ import sys
 import logging
 import tempfile
 import gc
+import shutil
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-
-# Install requirements if not already installed
-try:
-    from docling.document_converter import DocumentConverter
-except ImportError:
-    print("Installing docling...")
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "docling", "flask", "flask-cors", "requests"])
-    from docling.document_converter import DocumentConverter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,16 +30,115 @@ try:
 except ImportError:
     pass
 
+# Set HuggingFace cache directory to a writable location
+os.environ["HF_HOME"] = "/tmp/huggingface"
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/huggingface/transformers"
+os.environ["HF_DATASETS_CACHE"] = "/tmp/huggingface/datasets"
+os.environ["HF_HUB_CACHE"] = "/tmp/huggingface/hub"
+
+# Create cache directories if they don't exist
+os.makedirs("/tmp/huggingface", exist_ok=True)
+os.makedirs("/tmp/huggingface/transformers", exist_ok=True)
+os.makedirs("/tmp/huggingface/datasets", exist_ok=True)
+os.makedirs("/tmp/huggingface/hub", exist_ok=True)
+
 # Lazy loading for Docling converter to reduce memory usage
 _converter = None
+_converter_error = None
+
+def extract_text_with_pymupdf(pdf_path):
+    """Extract text from PDF using PyMuPDF"""
+    try:
+        import fitz  # PyMuPDF
+        
+        doc = fitz.open(pdf_path)
+        text_content = ""
+        
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            text_content += page.get_text()
+        
+        doc.close()
+        return text_content
+        
+    except Exception as e:
+        logger.error(f"PyMuPDF extraction failed: {e}")
+        raise e
+
+def extract_text_with_pypdf2(pdf_path):
+    """Extract text from PDF using PyPDF2"""
+    try:
+        from PyPDF2 import PdfReader
+        
+        reader = PdfReader(pdf_path)
+        text_content = ""
+        
+        for page in reader.pages:
+            text_content += page.extract_text() + "\n"
+        
+        return text_content
+        
+    except Exception as e:
+        logger.error(f"PyPDF2 extraction failed: {e}")
+        raise e
+
+def setup_docling_cache():
+    """Setup Docling cache directories and handle model file issues"""
+    try:
+        logger.info("🔧 Setting up Docling cache directories...")
+        
+        # Create the specific directory structure that Docling expects
+        docling_cache_dir = "/tmp/huggingface/hub/models--ds4sd--docling-models"
+        os.makedirs(docling_cache_dir, exist_ok=True)
+        
+        # Create the snapshots directory
+        snapshots_dir = os.path.join(docling_cache_dir, "snapshots")
+        os.makedirs(snapshots_dir, exist_ok=True)
+        
+        # Create the specific snapshot directory
+        snapshot_dir = os.path.join(snapshots_dir, "fc0f2d45e2218ea24bce5045f58a389aed16dc23")
+        os.makedirs(snapshot_dir, exist_ok=True)
+        
+        # Create the model_artifacts directory
+        model_artifacts_dir = os.path.join(snapshot_dir, "model_artifacts")
+        os.makedirs(model_artifacts_dir, exist_ok=True)
+        
+        # Create the layout directory
+        layout_dir = os.path.join(model_artifacts_dir, "layout")
+        os.makedirs(layout_dir, exist_ok=True)
+        
+        # Create the beehive directory
+        beehive_dir = os.path.join(layout_dir, "beehive_v0.0.5")
+        os.makedirs(beehive_dir, exist_ok=True)
+        
+        logger.info("✅ Docling cache directories created")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to setup Docling cache: {e}")
 
 def get_converter():
-    """Get or create Docling converter singleton"""
-    global _converter
+    """Get or create Docling converter singleton with proper error handling"""
+    global _converter, _converter_error
+    
+    # For now, disable Docling completely to avoid ONNX file issues
+    if _converter_error:
+        raise _converter_error
+    
     if _converter is None:
-        logger.info("🔄 Initializing Docling DocumentConverter...")
-        _converter = DocumentConverter()
-        logger.info("✅ Docling DocumentConverter initialized")
+        try:
+            logger.info("🔄 Docling is currently disabled due to model file issues")
+            logger.info("📄 Using PyMuPDF and PyPDF2 fallback methods instead")
+            
+            # Set converter to None to indicate it's not available
+            _converter = None
+            _converter_error = Exception("Docling is disabled - using fallback methods")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize Docling converter: {str(e)}"
+            logger.error(f"❌ {error_msg}")
+            _converter_error = Exception(error_msg)
+            raise _converter_error
+    
     return _converter
 
 @app.route('/health', methods=['GET'])
@@ -65,6 +156,7 @@ def health_check():
     
     # Test if Docling is actually available
     docling_available = False
+    docling_error = None
     try:
         converter = get_converter()
         if converter is not None:
@@ -75,12 +167,15 @@ def health_check():
     except Exception as e:
         logger.error(f"❌ Docling converter test failed: {e}")
         docling_available = False
+        docling_error = str(e)
     
     return jsonify({
         'status': 'healthy',
         'service': 'docling_extraction_service',
         'docling_available': docling_available,
-        'memory': memory_info
+        'docling_error': docling_error,
+        'memory': memory_info,
+        'cache_dir': os.environ.get("HF_HOME", "not_set")
     })
 
 @app.route('/healthz', methods=['GET'])
@@ -90,7 +185,7 @@ def healthz():
 
 @app.route('/upload', methods=['POST'])
 def upload_and_extract():
-    """Upload and extract content from PDF file using Docling"""
+    """Upload and extract content from PDF file using Docling with fallback"""
     try:
         # Check if file was uploaded
         if 'file' not in request.files:
@@ -111,36 +206,101 @@ def upload_and_extract():
         file.save(temp_file.name)
         
         try:
-            # Use Docling's conversion on the temp file
-            converter = get_converter()
-            result = converter.convert(temp_file.name)
+            # Check if Docling is available first
+            docling_available = False
+            try:
+                converter = get_converter()
+                if converter is not None:
+                    docling_available = True
+            except:
+                docling_available = False
             
-            # Export to markdown - this is the main content
-            markdown_content = result.document.export_to_markdown()
+            # Try Docling first if available
+            if docling_available:
+                try:
+                    result = converter.convert(temp_file.name)
+                    
+                    # Export to markdown - this is the main content
+                    markdown_content = result.document.export_to_markdown()
+                    
+                    # Extract title from filename if not available from document
+                    doc_title = file.filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
+                    
+                    # Calculate basic statistics
+                    word_count = len(markdown_content.split())
+                    
+                    logger.info(f"✅ Successfully extracted {word_count} words from uploaded {file.filename} using Docling")
+                    
+                    # Force garbage collection to free memory
+                    gc.collect()
+                    
+                    return jsonify({
+                        'success': True,
+                        'title': doc_title,
+                        'content': markdown_content,
+                        'metadata': {
+                            'filename': file.filename,
+                            'word_count': word_count,
+                            'character_count': len(markdown_content),
+                            'extraction_method': 'docling_upload',
+                        },
+                        'extraction_confidence': 0.95
+                    })
+                    
+                except Exception as docling_error:
+                    logger.warning(f"Docling extraction failed, trying simple extraction: {docling_error}")
+                    # Continue to fallback
+            else:
+                logger.info("Docling not available, using fallback extraction methods")
             
-            # Extract title from filename if not available from document
-            doc_title = file.filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
-            
-            # Calculate basic statistics
-            word_count = len(markdown_content.split())
-            
-            logger.info(f"✅ Successfully extracted {word_count} words from uploaded {file.filename}")
-            
-            # Force garbage collection to free memory
-            gc.collect()
-            
-            return jsonify({
-                'success': True,
-                'title': doc_title,
-                'content': markdown_content,
-                'metadata': {
-                    'filename': file.filename,
-                    'word_count': word_count,
-                    'character_count': len(markdown_content),
-                    'extraction_method': 'docling_upload',
-                },
-                'extraction_confidence': 0.95
-            })
+            # Fallback to simple extraction
+            try:
+                # Try PyMuPDF first, then PyPDF2 as fallback
+                text_content = ""
+                extraction_method = ""
+                
+                try:
+                    text_content = extract_text_with_pymupdf(temp_file.name)
+                    extraction_method = "pymupdf"
+                    logger.info("✅ PyMuPDF extraction successful")
+                except Exception as pymupdf_error:
+                    logger.warning(f"PyMuPDF failed, trying PyPDF2: {pymupdf_error}")
+                    try:
+                        text_content = extract_text_with_pypdf2(temp_file.name)
+                        extraction_method = "pypdf2"
+                        logger.info("✅ PyPDF2 extraction successful")
+                    except Exception as pypdf2_error:
+                        logger.error(f"Both fallback methods failed: {pypdf2_error}")
+                        raise Exception(f"All PDF extraction methods failed: {pypdf2_error}")
+                
+                # Extract title from filename
+                doc_title = file.filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
+                
+                # Calculate basic statistics
+                word_count = len(text_content.split())
+                
+                logger.info(f"✅ Successfully extracted {word_count} words from uploaded {file.filename} using {extraction_method}")
+                
+                # Force garbage collection to free memory
+                gc.collect()
+                
+                return jsonify({
+                    'success': True,
+                    'title': doc_title,
+                    'content': text_content,
+                    'metadata': {
+                        'filename': file.filename,
+                        'word_count': word_count,
+                        'character_count': len(text_content),
+                        'extraction_method': extraction_method,
+                        'docling_available': docling_available,
+                    },
+                    'extraction_confidence': 0.85
+                })
+                
+            except Exception as fallback_error:
+                logger.error(f"Fallback extraction failed: {fallback_error}")
+                raise Exception(f"PDF extraction failed: {fallback_error}")
             
         finally:
             # Clean up temp file
@@ -158,7 +318,7 @@ def upload_and_extract():
 
 @app.route('/extract', methods=['POST'])
 def extract_pdf_content():
-    """Extract content from PDF using simple Docling approach"""
+    """Extract content from PDF using Docling with fallback to simple extraction"""
     try:
         data = request.get_json()
         if not data:
@@ -181,36 +341,126 @@ def extract_pdf_content():
                 'success': False
             }), 400
         
-        # Use Docling's conversion
-        converter = get_converter()
-        result = converter.convert(processed_url)
+        # Check if Docling is available first
+        docling_available = False
+        try:
+            converter = get_converter()
+            if converter is not None:
+                docling_available = True
+        except:
+            docling_available = False
         
-        # Export to markdown - this is the main content
-        markdown_content = result.document.export_to_markdown()
+        # Try Docling first if available
+        if docling_available:
+            try:
+                result = converter.convert(processed_url)
+                
+                # Export to markdown - this is the main content
+                markdown_content = result.document.export_to_markdown()
+                
+                # Extract title from filename if not available from document
+                doc_title = filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
+                
+                # Calculate basic statistics
+                word_count = len(markdown_content.split())
+                
+                logger.info(f"✅ Successfully extracted {word_count} words from {filename} using Docling")
+                
+                # Force garbage collection to free memory
+                gc.collect()
+                
+                return jsonify({
+                    'success': True,
+                    'title': doc_title,
+                    'content': markdown_content,
+                    'metadata': {
+                        'filename': filename,
+                        'word_count': word_count,
+                        'character_count': len(markdown_content),
+                        'extraction_method': 'docling_simple',
+                    },
+                    'extraction_confidence': 0.95
+                })
+                
+            except Exception as docling_error:
+                logger.warning(f"Docling extraction failed, trying simple extraction: {docling_error}")
+                # Continue to fallback
+        else:
+            logger.info("Docling not available, using fallback extraction methods")
         
-        # Extract title from filename if not available from document
-        doc_title = filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
-        
-        # Calculate basic statistics
-        word_count = len(markdown_content.split())
-        
-        logger.info(f"✅ Successfully extracted {word_count} words from {filename}")
-        
-        # Force garbage collection to free memory
-        gc.collect()
-        
-        return jsonify({
-            'success': True,
-            'title': doc_title,
-            'content': markdown_content,
-            'metadata': {
-                'filename': filename,
-                'word_count': word_count,
-                'character_count': len(markdown_content),
-                'extraction_method': 'docling_simple',
-            },
-            'extraction_confidence': 0.95
-        })
+        # Fallback to simple extraction
+        try:
+            # Download PDF if it's a URL
+            if processed_url.startswith(('http://', 'https://')):
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+                try:
+                    response = requests.get(processed_url, timeout=30)
+                    response.raise_for_status()
+                    temp_file.write(response.content)
+                    temp_file.close()
+                    pdf_path = temp_file.name
+                except Exception as e:
+                    logger.error(f"Failed to download PDF: {e}")
+                    raise Exception(f"Failed to download PDF: {str(e)}")
+            else:
+                pdf_path = processed_url
+                temp_file = None
+            
+            try:
+                # Try PyMuPDF first, then PyPDF2 as fallback
+                text_content = ""
+                extraction_method = ""
+                
+                try:
+                    text_content = extract_text_with_pymupdf(pdf_path)
+                    extraction_method = "pymupdf"
+                    logger.info("✅ PyMuPDF extraction successful")
+                except Exception as pymupdf_error:
+                    logger.warning(f"PyMuPDF failed, trying PyPDF2: {pymupdf_error}")
+                    try:
+                        text_content = extract_text_with_pypdf2(pdf_path)
+                        extraction_method = "pypdf2"
+                        logger.info("✅ PyPDF2 extraction successful")
+                    except Exception as pypdf2_error:
+                        logger.error(f"Both fallback methods failed: {pypdf2_error}")
+                        raise Exception(f"All PDF extraction methods failed: {pypdf2_error}")
+                
+                # Extract title from filename
+                doc_title = filename.replace('.pdf', '').replace('_', ' ').replace('-', ' ').title()
+                
+                # Calculate basic statistics
+                word_count = len(text_content.split())
+                
+                logger.info(f"✅ Successfully extracted {word_count} words from {filename} using {extraction_method}")
+                
+                # Force garbage collection to free memory
+                gc.collect()
+                
+                return jsonify({
+                    'success': True,
+                    'title': doc_title,
+                    'content': text_content,
+                    'metadata': {
+                        'filename': filename,
+                        'word_count': word_count,
+                        'character_count': len(text_content),
+                        'extraction_method': extraction_method,
+                        'docling_available': docling_available,
+                    },
+                    'extraction_confidence': 0.85
+                })
+                
+            finally:
+                # Clean up temp file if we created one
+                if temp_file:
+                    try:
+                        os.unlink(temp_file.name)
+                    except:
+                        pass
+                        
+        except Exception as fallback_error:
+            logger.error(f"Fallback extraction failed: {fallback_error}")
+            raise Exception(f"PDF extraction failed: {fallback_error}")
         
     except Exception as e:
         logger.error(f"❌ Extraction error: {e}")
@@ -301,6 +551,7 @@ if __name__ == '__main__':
     
     logger.info(f"🚀 Starting Docling PDF Extraction Service on port {port}")
     logger.info(f"🔧 Debug mode: {debug_mode}")
+    logger.info(f"📁 Cache directory: {os.environ.get('HF_HOME', 'not_set')}")
     
     # Test Docling availability
     try:
