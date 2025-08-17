@@ -12,16 +12,32 @@ export interface LocalMessage {
   isBot: boolean;
   url?: string;
   filename?: string;
-  file_type?: string;
-  file_size?: number;
   tags?: string[];
   starred?: boolean; // Add starred property
+  previewUri?: string; // PDF preview image URI
   linkPreview?: {
     title?: string;
     description?: string;
     image?: string;
     domain?: string;
   };
+  
+  // AI Analysis fields
+  ai_analysis?: string;
+  content_insights?: string;
+  visual_description?: string;
+  document_summary?: string;
+  
+  // Content extraction fields
+  extracted_text?: string;
+  extracted_title?: string;
+  extracted_author?: string;
+  extracted_excerpt?: string;
+  word_count?: number;
+  content_category?: string;
+  extraction_status?: string;
+  
+  // Legacy fields for backward compatibility
   aiAnalysis?: string;
   contentInsights?: string;
 }
@@ -457,8 +473,9 @@ class ChatService {
       });
 
       // Ensure message data is properly formatted
+      const { preview_image, ...messageWithoutPreview } = message; // Remove preview_image field
       const cleanMessage = {
-        ...message,
+        ...messageWithoutPreview,
         // Remove any undefined values that might cause issues
         tags: message.tags && message.tags.length > 0 ? message.tags : null,
         file_url: message.file_url || null,
@@ -998,19 +1015,49 @@ class ChatService {
 
   // Convert database message to local message format
   convertToLocalMessage(dbMessage: ChatMessage): LocalMessage {
+    // Convert UUID to a consistent number for local use
+    const numericId = this.uuidToNumber(dbMessage.id);
+    
     return {
-      id: parseInt(dbMessage.id) || Date.now(),
+      id: numericId,
       content: dbMessage.content,
       type: dbMessage.type,
       timestamp: dbMessage.timestamp,
       isBot: dbMessage.is_bot,
       url: dbMessage.file_url,
       filename: dbMessage.filename,
-      file_type: dbMessage.file_type,
-      file_size: dbMessage.file_size,
       tags: dbMessage.tags,
       starred: dbMessage.tags?.includes('starred') || false, // Add starred property
+      
+      // Preserve AI Analysis fields
+      ai_analysis: dbMessage.ai_analysis,
+      content_insights: dbMessage.content_insights,
+      visual_description: dbMessage.visual_description,
+      document_summary: dbMessage.document_summary,
+      
+      // Preserve Content extraction fields
+      extracted_text: dbMessage.extracted_text,
+      extracted_title: dbMessage.extracted_title,
+      extracted_author: dbMessage.extracted_author,
+      extracted_excerpt: dbMessage.extracted_excerpt,
+      word_count: dbMessage.word_count,
+      content_category: dbMessage.content_category,
+      extraction_status: dbMessage.extraction_status,
+      
+      // previewUri: dbMessage.preview_image, // Removed - preview not stored in database
     };
+  }
+
+  // Convert UUID to a consistent number for local use
+  private uuidToNumber(uuid: string): number {
+    // Create a hash of the UUID to get a consistent number
+    let hash = 0;
+    for (let i = 0; i < uuid.length; i++) {
+      const char = uuid.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash);
   }
 
   // Convert local message to database format
@@ -1149,7 +1196,9 @@ class ChatService {
 
     // Prepare message data
     const messageData: Omit<ChatMessage, 'id' | 'created_at' | 'updated_at'> = {
-      content: content, // Just use the original content without the extraction info
+      content: extractedContent 
+        ? `${content} [Content extracted: ${extractedContent.content.split(' ').length} words]`
+        : content,
       type,
       user_id: user.id,
       is_bot: options.isBot || false,
@@ -1164,11 +1213,12 @@ class ChatService {
       file_path: options.filePath || undefined,
       file_type: options.fileType || undefined,
       file_size: options.fileSize || undefined,
+      // preview_image: options.previewUri || undefined, // Removed - preview not stored in database
       // Extracted content fields
-      extracted_text: extractedContent?.full_text || extractedContent?.content || undefined,
-      extracted_title: extractedContent?.title || undefined,
-      extracted_author: extractedContent?.author || undefined,
-      extracted_excerpt: extractedContent?.summary || undefined,
+      extracted_text: extractedContent ? this.validateExtractedText(extractedContent.full_text || extractedContent.content) : undefined,
+      extracted_title: extractedContent ? this.validateExtractedText(extractedContent.title) : undefined,
+      extracted_author: extractedContent ? this.validateExtractedText(extractedContent.author) : undefined,
+      extracted_excerpt: extractedContent ? this.validateExtractedText(extractedContent.summary) : undefined,
       extraction_status: extractedContent ? 'completed' : 'not_attempted',
       word_count: extractedContent ? extractedContent.content.split(' ').length : undefined
     };
@@ -1190,6 +1240,46 @@ class ChatService {
     }
 
     return savedMessage;
+  }
+
+  /**
+   * Validate extracted text to prevent database corruption
+   */
+  private validateExtractedText(text: string | undefined): string | undefined {
+    if (!text) return undefined;
+    
+    // Check for corrupted content patterns
+    const corruptedPatterns = [
+      /[^\x00-\x7F]{10,}/g, // Long sequences of non-ASCII characters
+      /[^\x20-\x7E]{20,}/g, // Long sequences of non-printable characters
+      /\0{3,}/g, // Multiple null characters
+      /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]{5,}/g, // Multiple control characters
+    ];
+    
+    // Check if content appears to be corrupted
+    const isCorrupted = corruptedPatterns.some(pattern => pattern.test(text));
+    
+    if (isCorrupted) {
+      console.warn('⚠️ Detected corrupted extracted text, cleaning...');
+      
+      // Clean the text
+      let cleanedText = text
+        .replace(/\0/g, '') // Remove null characters
+        .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
+        .replace(/[^\x20-\x7E]{10,}/g, ' ') // Replace long non-printable sequences with spaces
+        .replace(/\s+/g, ' ') // Normalize whitespace
+        .trim();
+      
+      // If still corrupted, return undefined
+      if (cleanedText.length < 10 || /[^\x20-\x7E]{20,}/.test(cleanedText)) {
+        console.error('❌ Extracted text is severely corrupted, skipping storage');
+        return undefined;
+      }
+      
+      return cleanedText;
+    }
+    
+    return text;
   }
 
   // Clean up orphaned extracted content that doesn't correspond to existing messages
@@ -1362,7 +1452,7 @@ class ChatService {
                 word_count: extractedContent.content.split(' ').length,
                 content_category: message.type === 'link' ? 'web_article' : 'document',
                 extraction_status: 'completed',
-                ai_analysis: `Content extracted successfully.`,
+                ai_analysis: `Content extracted successfully. ${extractedContent.content.split(' ').length} words analyzed.`,
                 content_insights: `Title: ${extractedContent.title || 'Unknown'}, Author: ${extractedContent.author || 'Unknown'}`,
               })
               .eq('id', message.id);
@@ -1474,15 +1564,18 @@ class ChatService {
     }
   }
 
-  // Update message tags in the database
-  async updateMessageTags(id: string, tags: string[]): Promise<void> {
+  // Update message tags and user intent in the database
+  async updateMessageTagsAndIntent(id: string, tags: string[], userIntent?: string): Promise<void> {
     try {
-      console.log(`🔄 Updating tags for message ${id}:`, { tags });
+      console.log(`🔄 Updating tags and intent for message ${id}:`, { tags, userIntent });
       
       const user = await this.getCurrentUser();
       
-      // Update the message tags in the database
-      const updateData = { tags: tags };
+      // Update the message tags and intent in the database
+      const updateData: any = { tags: tags };
+      if (userIntent !== undefined) {
+        updateData.user_intent = userIntent.trim() || null;
+      }
 
       const { error } = await supabase
         .from('chat_messages')
@@ -1491,13 +1584,13 @@ class ChatService {
         .eq('user_id', user.id);
 
       if (error) {
-        console.error('❌ Error updating message tags:', error);
+        console.error('❌ Error updating message tags and intent:', error);
         throw new Error(error.message);
       }
 
-      console.log(`✅ Message ${id} tags updated successfully:`, { tags });
+      console.log(`✅ Message ${id} tags and intent updated successfully:`, { tags, userIntent });
     } catch (error) {
-      console.error('❌ Error in updateMessageTags:', error);
+      console.error('❌ Error in updateMessageTagsAndIntent:', error);
       throw error;
     }
   }
@@ -1687,59 +1780,6 @@ class ChatService {
     }
   }
 
-  // Debug method to check extracted content status
-  async debugExtractedContent(): Promise<any> {
-    try {
-      console.log('🔍 Debugging extracted content status...');
-      const user = await this.getCurrentUser();
-      
-      const { data, error } = await supabase
-        .from('chat_messages')
-        .select('id, type, filename, extracted_text, extracted_title, word_count, extraction_status')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(20);
-
-      if (error) {
-        console.error('❌ Debug query error:', error);
-        return { error: error.message };
-      }
-
-      const messagesWithExtractedText = data?.filter(msg => msg.extracted_text && msg.extracted_text.length > 0) || [];
-      const messagesWithoutExtractedText = data?.filter(msg => !msg.extracted_text || msg.extracted_text.length === 0) || [];
-
-      console.log('📊 Extracted content debug results:', {
-        totalMessages: data?.length || 0,
-        withExtractedText: messagesWithExtractedText.length,
-        withoutExtractedText: messagesWithoutExtractedText.length,
-        messagesWithExtractedText: messagesWithExtractedText.map(msg => ({
-          id: msg.id,
-          type: msg.type,
-          filename: msg.filename,
-          extractedTextLength: msg.extracted_text?.length || 0,
-          wordCount: msg.word_count || 0,
-          extractionStatus: msg.extraction_status || 'unknown'
-        }))
-      });
-
-      return {
-        totalMessages: data?.length || 0,
-        withExtractedText: messagesWithExtractedText.length,
-        withoutExtractedText: messagesWithoutExtractedText.length,
-        messagesWithExtractedText: messagesWithExtractedText.map(msg => ({
-          id: msg.id,
-          type: msg.type,
-          filename: msg.filename,
-          extractedTextLength: msg.extracted_text?.length || 0,
-          wordCount: msg.word_count || 0,
-          extractionStatus: msg.extraction_status || 'unknown'
-        }))
-      };
-    } catch (error) {
-      console.error('❌ Debug extracted content error:', error);
-      return { error: error instanceof Error ? error.message : String(error) };
-    }
-  }
 
 
   // Display database extracted_text in console for debugging

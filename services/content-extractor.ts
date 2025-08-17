@@ -71,106 +71,9 @@ export class ContentExtractor {
         console.log('🐍 Attempting Docling extraction...');
         return await this.extractWithDoclingService(filePath, fileName);
       } catch (doclingError) {
-        console.warn('⚠️ Docling extraction failed, trying enhanced service:', doclingError);
+        console.error('❌ Docling extraction failed:', doclingError);
+        throw new Error(`Docling PDF extraction failed: ${doclingError instanceof Error ? doclingError.message : String(doclingError)}`);
       }
-
-      // Fallback method: Use enhanced PDF service
-      try {
-        console.log('🔄 Trying enhanced PDF service as fallback...');
-        const enhancedServiceUrl = 'https://blii-pdf-extraction-production.up.railway.app';
-        
-        // Check if enhanced service is available
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000);
-        
-        const healthResponse = await fetch(`${enhancedServiceUrl}/health`, {
-          method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (healthResponse.ok) {
-          const healthData = await healthResponse.json();
-          console.log('✅ Enhanced PDF service is available:', healthData);
-          
-          // Call the enhanced extraction endpoint
-          const controller2 = new AbortController();
-          const timeoutId2 = setTimeout(() => controller2.abort(), 60000);
-          
-          const extractResponse = await fetch(`${enhancedServiceUrl}/extract`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              pdf_url: filePath,
-              filename: fileName,
-              generate_preview: true
-            }),
-            signal: controller2.signal
-          });
-          
-          clearTimeout(timeoutId2);
-          
-          if (extractResponse.ok) {
-            const result = await extractResponse.json();
-            
-            if (result.success) {
-              console.log(`✅ Enhanced PDF extraction successful using ${result.method}`);
-              
-              // Validate and clean the extracted content
-              const validatedContent = this.validateAndCleanExtractedText(result.content);
-              
-              const cleanedContent = {
-                title: result.title || fileName.replace('.pdf', ''),
-                content: validatedContent,
-                full_text: validatedContent,
-                summary: this.generateSummaryFromContent(validatedContent),
-                metadata: {
-                  ...result.metadata,
-                  extractionMethod: result.method,
-                  confidence: 0.90,
-                  extractedAt: new Date().toISOString(),
-                  wordCount: result.word_count,
-                  pageCount: result.page_count
-                }
-              };
-              
-              return cleanedContent;
-            }
-          }
-        }
-      } catch (enhancedError) {
-        console.warn('⚠️ Enhanced service failed, trying PDFKit:', enhancedError);
-      }
-
-      // Final fallback: Use PDFKit only for local files
-      if (filePath.startsWith('file://')) {
-        try {
-          console.log('📄 Using PDFKit as final fallback for local file...');
-          const { pdfKitExtractor } = await import('./pdfkit-extractor');
-          const result = await pdfKitExtractor.extractPDFContent(filePath, fileName);
-          
-          if (result.success && result.content) {
-            console.log(`✅ PDF extraction completed using PDFKit ${result.extractionMethod} method`);
-            
-            // Validate and clean the extracted content
-            const validatedContent = {
-              ...result.content,
-              content: this.validateAndCleanExtractedText(result.content.content),
-              full_text: this.validateAndCleanExtractedText(result.content.full_text || result.content.content),
-              title: this.validateAndCleanExtractedText(result.content.title),
-              summary: this.validateAndCleanExtractedText(result.content.summary || '')
-            };
-            
-            return validatedContent;
-          }
-        } catch (pdfKitError) {
-          console.error('❌ PDFKit extraction also failed:', pdfKitError);
-        }
-      }
-
-      throw new Error('All PDF extraction methods failed');
     } catch (error) {
       console.error('❌ PDF processing failed:', error);
       throw error;
@@ -182,22 +85,18 @@ export class ContentExtractor {
    */
   private async extractWithDoclingService(filePath: string, fileName: string): Promise<ExtractedContent> {
     try {
-      console.log('🐍 Calling Docling Python service for:', fileName);
+      console.log('🐍 Calling local Docling Python service for:', fileName);
       
-      // Import and use the configured service URL
-      const { ACTIVE_DOCLING_SERVICE, FALLBACK_DOCLING_SERVICES } = await import('../config/service-urls');
-      const doclingServiceUrl = ACTIVE_DOCLING_SERVICE;
+      // Use local Docling service
+      const doclingServiceUrl = 'http://localhost:8080';
       
-      // Check if Docling service is running with fallback support
-      let serviceAvailable = false;
-      let activeServiceUrl = doclingServiceUrl;
-      
-      // Try the primary service first
+      // Check if local Docling service is running
       try {
+        // Create a timeout controller for React Native compatibility
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout for cloud services
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout for health check
         
-        const healthResponse = await fetch(`${activeServiceUrl}/health`, {
+        const healthResponse = await fetch(`${doclingServiceUrl}/health`, {
           method: 'GET',
           headers: { 'Content-Type': 'application/json' },
           signal: controller.signal
@@ -205,61 +104,31 @@ export class ContentExtractor {
         
         clearTimeout(timeoutId);
         
-        if (healthResponse.ok) {
-          const healthData = await healthResponse.json();
-          if (healthData.docling_available) {
-            serviceAvailable = true;
-            console.log('✅ Primary Docling service is healthy and ready');
-          }
+        if (!healthResponse.ok) {
+          throw new Error(`Local Docling service health check failed: ${healthResponse.status}`);
         }
-      } catch (primaryError) {
-        console.warn('⚠️ Primary Docling service health check failed:', primaryError);
-      }
-      
-      // If primary service failed, try fallback services
-      if (!serviceAvailable) {
-        console.log('🔄 Trying fallback Docling services...');
         
-        for (const fallbackUrl of FALLBACK_DOCLING_SERVICES) {
-          if (fallbackUrl === activeServiceUrl) continue; // Skip if it's the same as primary
-          
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10000);
-            
-            const healthResponse = await fetch(`${fallbackUrl}/health`, {
-              method: 'GET',
-              headers: { 'Content-Type': 'application/json' },
-              signal: controller.signal
-            });
-            
-            clearTimeout(timeoutId);
-            
-            if (healthResponse.ok) {
-              const healthData = await healthResponse.json();
-              if (healthData.docling_available) {
-                activeServiceUrl = fallbackUrl;
-                serviceAvailable = true;
-                console.log(`✅ Fallback Docling service is healthy: ${fallbackUrl}`);
-                break;
-              }
-            }
-          } catch (fallbackError) {
-            console.warn(`⚠️ Fallback service ${fallbackUrl} failed:`, fallbackError);
-          }
+        const healthData = await healthResponse.json();
+        if (!healthData.docling_available) {
+          throw new Error('Docling not available in local service');
         }
-      }
-      
-      if (!serviceAvailable) {
-        throw new Error('No Docling service available. All services are down.');
+        
+        console.log('✅ Local Docling service is healthy and ready');
+      } catch (healthError) {
+        console.error('❌ Local Docling service health check failed:', healthError);
+        console.log('💡 To start the local Docling service manually:');
+        console.log('   1. Open a new terminal');
+        console.log('   2. Navigate to the python-services directory');
+        console.log('   3. Run: source venv/bin/activate && python3 docling_service.py');
+        throw new Error(`Local Docling service unavailable. Please start it manually: ${healthError}`);
       }
       
       // Call extraction endpoint
       const controller2 = new AbortController();
       const timeoutId2 = setTimeout(() => controller2.abort(), 120000); // 2 minute timeout for PDF processing
       
-      console.log(`📤 Sending extraction request to Docling service: ${activeServiceUrl}`);
-      const extractResponse = await fetch(`${activeServiceUrl}/extract`, {
+      console.log('📤 Sending extraction request to local Docling...');
+      const extractResponse = await fetch(`${doclingServiceUrl}/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -274,18 +143,18 @@ export class ContentExtractor {
       
       if (!extractResponse.ok) {
         const errorData = await extractResponse.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(`Docling extraction failed: ${errorData.error || extractResponse.statusText}`);
+        throw new Error(`Local Docling extraction failed: ${errorData.error || extractResponse.statusText}`);
       }
       
       const result = await extractResponse.json();
       
       if (!result.success) {
-        throw new Error(`Docling extraction failed: ${result.error}`);
+        throw new Error(`Local Docling extraction failed: ${result.error}`);
       }
       
       // Validate the extracted content
       if (!result.content || typeof result.content !== 'string') {
-        throw new Error('Docling returned invalid content format');
+        throw new Error('Local Docling returned invalid content format');
       }
       
       // Clean and validate the extracted content
@@ -301,7 +170,7 @@ export class ContentExtractor {
         metadata: {
           fileType: 'pdf',
           fileName,
-          extractionMethod: 'docling_cloud',
+          extractionMethod: 'docling_local',
           extractedAt: new Date().toISOString(),
           ...result.metadata,
           confidence: result.extraction_confidence || 0.95,
@@ -309,24 +178,24 @@ export class ContentExtractor {
           wordCount: result.metadata?.word_count || cleanedContent.split(' ').length,
           pageCount: result.metadata?.page_count || 0,
           preview_image: result.preview_image, // Store preview image in metadata
-          serviceUrl: activeServiceUrl // Track which service was used
+          serviceUrl: doclingServiceUrl // Track which service was used
         }
       };
       
-      console.log('✅ Docling extraction successful:', {
+      console.log('✅ Local Docling extraction successful:', {
         title: extractedContent.title,
         contentLength: extractedContent.content.length,
         wordCount: extractedContent.metadata.wordCount,
         pages: extractedContent.metadata.pageCount,
         hasTables: result.metadata?.has_tables || false,
         hasImages: result.metadata?.has_images || false,
-        serviceUrl: activeServiceUrl
+        serviceUrl: doclingServiceUrl
       });
       
       return extractedContent;
       
     } catch (error) {
-      console.error('❌ Docling service extraction failed:', error);
+      console.error('❌ Local Docling service extraction failed:', error);
       throw error;
     }
   }
@@ -484,15 +353,13 @@ export class ContentExtractor {
    */
   async testDoclingService(): Promise<boolean> {
     try {
-      console.log('🧪 Testing Docling service connectivity...');
+      console.log('🧪 Testing local Docling service connectivity...');
       
-      // Import and use the configured service URL
-      const { ACTIVE_DOCLING_SERVICE, FALLBACK_DOCLING_SERVICES } = await import('../config/service-urls');
-      const doclingServiceUrl = ACTIVE_DOCLING_SERVICE;
+      const doclingServiceUrl = 'http://localhost:8080';
       
       // Test health endpoint
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
       
       const healthResponse = await fetch(`${doclingServiceUrl}/health`, {
         method: 'GET',
@@ -503,23 +370,23 @@ export class ContentExtractor {
       clearTimeout(timeoutId);
       
       if (!healthResponse.ok) {
-        console.error('❌ Docling service health check failed:', healthResponse.status);
+        console.error('❌ Local Docling service health check failed:', healthResponse.status);
         return false;
       }
       
       const healthData = await healthResponse.json();
-      console.log('✅ Docling service health check passed:', healthData);
+      console.log('✅ Local Docling service health check passed:', healthData);
       
       if (!healthData.docling_available) {
-        console.error('❌ Docling not available in service');
+        console.error('❌ Docling not available in local service');
         return false;
       }
       
-      console.log('✅ Docling service is ready for extraction');
+      console.log('✅ Local Docling service is ready for extraction');
       return true;
       
     } catch (error) {
-      console.error('❌ Docling service test failed:', error);
+      console.error('❌ Local Docling service test failed:', error);
       return false;
     }
   }

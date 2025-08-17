@@ -3,16 +3,16 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Animated, Dimensions,
-  Image,
-  Modal,
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    Animated, Dimensions,
+    Image,
+    Modal,
+    SafeAreaView,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import EdgeCaseMessageComponent from '../components/EdgeCaseMessage';
 import ChatService from '../services/chat';
@@ -44,6 +44,8 @@ const HomeScreen = () => {
   const [user, setUser] = useState<any>(null);
   const sidebarAnim = useRef(new Animated.Value(-280)).current;
   const edgeCaseService = EdgeCaseMessagingService.getInstance();
+
+
 
   useEffect(() => {
     if (!user) {
@@ -884,12 +886,12 @@ const HomeScreen = () => {
             <View style={{ paddingHorizontal: 16, marginTop: 8 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                 <Text style={{ color: '#222', fontWeight: '600', fontFamily: 'SF Pro Semibold', fontSize: 16, lineHeight: 21, letterSpacing: -0.31 }}>Recent Saves</Text>
-                <TouchableOpacity>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/all-saves?openFilter=true')}>
                   <Ionicons name="options-outline" size={20} color="#B0B0B0" />
                 </TouchableOpacity>
               </View>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-start' }}>
-                {recentUploads.map((save, idx) => (
+                {filteredUploads.map((save, idx) => (
                   <View key={save.id} style={{ width: (width - 44) / 2, marginRight: idx % 2 === 0 ? 12 : 0, marginBottom: 14 }}>
                     <TouchableOpacity
                       style={{ backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#E5EAF0', overflow: 'hidden', height: save.type === 'image' ? 140 : 160 }}
@@ -1259,6 +1261,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     fontSize: 16,
   },
+
 });
 
 export default HomeScreen;

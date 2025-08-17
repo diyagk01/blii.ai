@@ -2,8 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 
 // Get these from your Supabase project settings
 // Go to: Settings > API in your Supabase dashboard
-const supabaseUrl = process.env.SUPABASE_URL || 'https://cckclzuomxsxyhmceqal.supabase.co'; // e.g., https://your-project.supabase.co
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNja2NsenVvbXhzeHlobWNlcWFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEwMTQwNzUsImV4cCI6MjA2NjU5MDA3NX0.p81d9dX8iiIwyIjyL2dABWdDGBE-HbsVchN957lfaAI'; // Public anon key
+const supabaseUrl = 'https://cckclzuomxsxyhmceqal.supabase.co'; // e.g., https://your-project.supabase.co
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNja2NsenVvbXhzeHlobWNlcWFsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEwMTQwNzUsImV4cCI6MjA2NjU5MDA3NX0.p81d9dX8iiIwyIjyL2dABWdDGBE-HbsVchN957lfaAI'; // Public anon key
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
@@ -39,13 +39,13 @@ export interface ChatMessage {
   file_type?: string;
   file_size?: number;
   tags?: string[];
-
+  user_intent?: string;            // User's custom note/intent for this content (max 30 chars)
   // AI Analysis fields
   ai_analysis?: string;        // Detailed AI analysis of content
   content_insights?: string;   // Key insights and summaries
   visual_description?: string; // For images: detailed visual description
   document_summary?: string;   // For documents: content summary
-  preview_image?: string;      // For PDFs: first page preview image URL
+  // preview_image?: string;      // Removed - preview not stored in database
   // Content extraction fields
   extracted_text?: string;     // Full extracted text from PDFs/articles
   extracted_title?: string;    // Title extracted from content

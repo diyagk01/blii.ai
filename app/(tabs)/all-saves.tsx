@@ -316,6 +316,14 @@ export default function AllSavesScreen() {
     }
   }, [params.filter]);
 
+  // Handle openFilter parameter to automatically open filter modal
+  useEffect(() => {
+    if (params.openFilter === 'true') {
+      console.log('🔍 Opening filter modal from parameter');
+      setIsFilterModalVisible(true);
+    }
+  }, [params.openFilter]);
+
   // Reset filter when screen is focused (to clear any persistent state)
   useFocusEffect(
     useCallback(() => {

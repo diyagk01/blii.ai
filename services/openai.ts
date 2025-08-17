@@ -35,7 +35,7 @@ class OpenAIService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: process.env.OPENROUTER_API_KEY || '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',
+      apiKey: process.env.OPENROUTER_API_KEY || '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -76,7 +76,7 @@ class OpenAIService {
       });
 
       // PRIORITY 1: Search in recent messages with extracted_text first
-      const relevantContent = allMessages.filter(msg => {
+      let relevantContent = allMessages.filter(msg => {
         const hasExtractedText = msg.extracted_text && msg.extracted_text.length > 100;
         const hasRelevantContent = msg.content && msg.content.toLowerCase().includes(userQuery.toLowerCase());
         const hasRelevantExtractedText = hasExtractedText && msg.extracted_text!.toLowerCase().includes(userQuery.toLowerCase());
@@ -84,7 +84,33 @@ class OpenAIService {
         return hasRelevantContent || hasRelevantExtractedText;
       });
 
+      // PRIORITY 2: If no relevant content found, include any documents with extracted text for summary requests
+      if (relevantContent.length === 0 && (userQuery.toLowerCase().includes('summarize') || userQuery.toLowerCase().includes('summary'))) {
+        console.log('🔍 No relevant content found for summary request, including documents with extracted text...');
+        const documentsWithExtractedText = allMessages.filter(msg => 
+          msg.extracted_text && msg.extracted_text.length > 100 && msg.type === 'file'
+        );
+        relevantContent = documentsWithExtractedText;
+        console.log(`📄 Found ${documentsWithExtractedText.length} documents with extracted text for summary`);
+      }
+
+      // Debug: Log the actual extracted_text content for relevant messages
+      console.log('🔍 Debugging relevant content extracted_text:');
+      relevantContent.forEach((msg, index) => {
+        console.log(`📋 Relevant Message ${index + 1}:`, {
+          id: msg.id,
+          type: msg.type,
+          hasExtractedText: !!msg.extracted_text,
+          extractedTextLength: msg.extracted_text?.length || 0,
+          extractedTextPreview: msg.extracted_text?.substring(0, 100) || 'N/A',
+          contentLength: msg.content?.length || 0,
+          title: msg.extracted_title || 'No title'
+        });
+      });
+
       console.log(`🎯 Found ${relevantContent.length} relevant messages with content matching query`);
+
+      // Use the relevantContent directly since we're debugging the issue
 
       // If no direct matches, try semantic search in extracted text
       if (relevantContent.length === 0) {
@@ -928,6 +954,7 @@ EXAMPLES:
       
       context.relevantContent.forEach((msg) => {
         // Add document/link extracted text content
+        console.log(`🔍 Processing message ${msg.id}: extracted_text exists: ${!!msg.extracted_text}, length: ${msg.extracted_text?.length || 0}`);
         if (msg.extracted_text && msg.extracted_text.length > 50) {
           hasContent = true;
           console.log(`🎯 Adding extracted text to prompt: ${msg.extracted_title}, length: ${msg.extracted_text.length}`);
@@ -937,9 +964,10 @@ EXAMPLES:
           prompt += `Word Count: ${msg.word_count || 'Unknown'}\n`;
           prompt += `Content Type: ${msg.type.toUpperCase()}\n`;
           prompt += `URL: ${msg.file_url || 'N/A'}\n\n`;
-          // Limit content length to avoid overwhelming the AI and encourage concise responses
-          const contentPreview = msg.extracted_text.length > 1000 
-            ? msg.extracted_text.substring(0, 1000) + '...[content truncated for brevity]'
+          // Limit content length to avoid overwhelming the AI and prevent token limit errors
+          const maxContentLength = 3000; // More conservative limit
+          const contentPreview = msg.extracted_text.length > maxContentLength 
+            ? msg.extracted_text.substring(0, maxContentLength) + '...[content truncated for brevity]'
             : msg.extracted_text;
           prompt += `CONTENT SUMMARY:\n${contentPreview}\n`;
           // Note: user_intent field not available in current schema
@@ -1173,28 +1201,67 @@ Build on the conversation, don't start over.\n`;
   // Generate focused response for reply functionality
   async generateFocusedResponse(systemPrompt: string, userPrompt: string): Promise<string> {
     try {
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: systemPrompt
-          },
-          {
-            role: 'user',
-            content: userPrompt
-          }
-        ],
-        max_tokens: 300,
-        temperature: 0.7,
-      });
+      // Check context length to prevent token limit errors
+      const totalContextLength = systemPrompt.length + userPrompt.length;
+      const maxContextLength = 100000; // Conservative limit to stay well under 128k tokens
+      
+      if (totalContextLength > maxContextLength) {
+        console.warn(`⚠️ Context too long (${totalContextLength} chars), truncating user prompt`);
+        
+        // Truncate user prompt while keeping system prompt intact
+        const availableLength = maxContextLength - systemPrompt.length - 1000; // Leave buffer
+        const truncatedUserPrompt = userPrompt.length > availableLength 
+          ? userPrompt.substring(0, availableLength) + '\n\n[Content truncated due to length limits. Please ask a more specific question about the content.]'
+          : userPrompt;
+        
+        console.log(`📝 Truncated context from ${totalContextLength} to ${systemPrompt.length + truncatedUserPrompt.length} characters`);
+        
+        const completion = await this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: truncatedUserPrompt
+            }
+          ],
+          max_tokens: 300,
+          temperature: 0.7,
+        });
 
-      const response = completion.choices[0]?.message?.content;
-      if (!response) {
-        throw new Error('No response generated');
+        const response = completion.choices[0]?.message?.content;
+        if (!response) {
+          throw new Error('No response generated');
+        }
+
+        return response;
+      } else {
+        const completion = await this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: userPrompt
+            }
+          ],
+          max_tokens: 300,
+          temperature: 0.7,
+        });
+
+        const response = completion.choices[0]?.message?.content;
+        if (!response) {
+          throw new Error('No response generated');
+        }
+
+        return response;
       }
-
-      return response;
     } catch (error) {
       console.error('❌ Error generating focused response:', error);
       throw error;
@@ -1628,15 +1695,10 @@ Rules:
     try {
       console.log('📄 Answering PDF question with enhanced processing:', query);
       
-      // Import the enhanced PDF processor dynamically to avoid circular dependency
-      const EnhancedPDFProcessor = await import('./enhanced-pdf-processor');
-      const enhancedPDFProcessor = EnhancedPDFProcessor.default.getInstance();
+      // Enhanced PDF processor removed - using Docling service only
+      console.log('📄 Enhanced PDF processor not available, using regular database search');
+      return await this.generateResponseWithDatabaseContext(query);
       
-      // Use the enhanced PDF processor to answer questions about all PDFs
-      const answer = await enhancedPDFProcessor.answerQuestionAboutPDFs(query);
-      
-      console.log('✅ PDF question answered successfully');
-      return answer;
     } catch (error) {
       console.error('❌ Error answering PDF question:', error);
       
@@ -1714,13 +1776,8 @@ Rules:
         console.log('📄 REPLY TO SPECIFIC: Using basic content');
       }
       
-      // Generate response focused ONLY on this specific content
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `You're Bill, responding to a user's question about a SPECIFIC piece of content they uploaded. 
+      // Check context length to prevent token limit errors
+      const systemPrompt = `You're Bill, responding to a user's question about a SPECIFIC piece of content they uploaded. 
 
 CRITICAL RULES:
 1. Answer ONLY based on the specific content provided below
@@ -1730,16 +1787,60 @@ CRITICAL RULES:
 5. Be conversational and helpful, but stay focused on ONLY this one piece of content
 6. Use phrases like "In this ${contentType.toLowerCase()}..." or "This specific document shows..."
 
-Keep it natural and helpful, but absolutely constrained to this one item.`
-          },
-          {
-            role: 'user',
-            content: `User's question: "${userQuery}"\n\n${messageContent}\n\nAnswer based ONLY on the content above. Do not reference anything else.`
-          }
-        ],
-        max_tokens: 300,
-        temperature: 0.3,
-      });
+Keep it natural and helpful, but absolutely constrained to this one item.`;
+
+      const userPrompt = `User's question: "${userQuery}"\n\n${messageContent}\n\nAnswer based ONLY on the content above. Do not reference anything else.`;
+
+      // Check if context is too long
+      const totalContextLength = systemPrompt.length + userPrompt.length;
+      const maxContextLength = 100000; // Conservative limit to stay well under 128k tokens
+      
+      let completion;
+      if (totalContextLength > maxContextLength) {
+        console.warn(`⚠️ Context too long (${totalContextLength} chars), truncating message content`);
+        
+        // Truncate message content while keeping system prompt and user question intact
+        const availableLength = maxContextLength - systemPrompt.length - userQuery.length - 1000; // Leave buffer
+        const truncatedMessageContent = messageContent.length > availableLength 
+          ? messageContent.substring(0, availableLength) + '\n\n[Content truncated due to length limits. Please ask a more specific question about the content.]'
+          : messageContent;
+        
+        const truncatedUserPrompt = `User's question: "${userQuery}"\n\n${truncatedMessageContent}\n\nAnswer based ONLY on the content above. Do not reference anything else.`;
+        
+        console.log(`📝 Truncated context from ${totalContextLength} to ${systemPrompt.length + truncatedUserPrompt.length} characters`);
+        
+        completion = await this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: truncatedUserPrompt
+            }
+          ],
+          max_tokens: 300,
+          temperature: 0.3,
+        });
+      } else {
+        completion = await this.openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt
+            },
+            {
+              role: 'user',
+              content: userPrompt
+            }
+          ],
+          max_tokens: 300,
+          temperature: 0.3,
+        });
+      }
 
       const response = completion.choices[0]?.message?.content;
       if (!response) {

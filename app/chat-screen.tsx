@@ -6,22 +6,22 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Easing, Image,
-  KeyboardAvoidingView,
-  Linking,
-  Modal,
-  Platform,
-  SafeAreaView as RNSafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Animated,
+    Easing, Image,
+    KeyboardAvoidingView,
+    Linking,
+    Modal,
+    Platform,
+    SafeAreaView as RNSafeAreaView,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import { SafeAreaView as SafeAreaContextView } from 'react-native-safe-area-context';
 import ChatService from '../services/chat';
@@ -101,6 +101,21 @@ interface Message {
   file_type?: string;
   file_size?: number;
   tags?: string[];
+
+  // AI Analysis fields
+  ai_analysis?: string;
+  content_insights?: string;
+  visual_description?: string;
+  document_summary?: string;
+  
+  // Content extraction fields
+  extracted_text?: string;
+  extracted_title?: string;
+  extracted_author?: string;
+  extracted_excerpt?: string;
+  word_count?: number;
+  content_category?: string;
+  extraction_status?: string;
 
   // Link preview data
   linkPreview?: {
@@ -335,18 +350,21 @@ const ChatScreen = () => {
     });
   };
 
-  // Helper function to format file details dynamically
-  const getFileDetails = (message: Message): string => {
+  // Helper function to format file details dynamically - MEMOIZED to prevent infinite loops
+  const getFileDetails = useCallback((message: Message): string => {
     const filename = message.filename || '';
     const fileType = message.file_type || '';
     const fileSize = message.file_size || 0;
     
-    console.log('📄 getFileDetails called for:', {
-      filename,
-      fileType,
-      fileSize,
-      messageId: message.id
-    });
+    // Only log in development to reduce console spam
+    if (__DEV__) {
+      console.log('📄 getFileDetails called for:', {
+        filename,
+        fileType,
+        fileSize,
+        messageId: message.id
+      });
+    }
     
     // Determine file type from filename or file_type
     let type = 'Document';
@@ -384,12 +402,14 @@ const ChatScreen = () => {
       }
     }
     
-    console.log('📄 File details result:', `${type} • ${sizeText}`);
+    if (__DEV__) {
+      console.log('📄 File details result:', `${type} • ${sizeText}`);
+    }
     
     // For now, we'll show just the type and size since page count requires PDF parsing
     // In the future, you could add page_count to the message object and use it here
     return `${type} • ${sizeText}`;
-  };
+  }, []);
 
   // Helper function to get emoji for a tag - consistent with message creation
   const getTagEmoji = (tagName: string): string => {
@@ -725,10 +745,9 @@ const ChatScreen = () => {
       
       if (dbMessages.length > 0) {
         console.log('✅ Converting database messages to local format...');
-        // Convert database messages to local format with unique IDs and starred status
+        // Convert database messages to local format with preserved IDs and starred status
         const localMessages = dbMessages.map((msg, index) => ({
           ...chatService.convertToLocalMessage(msg),
-          id: generateUniqueId(), // Ensure unique ID
           starred: msg.tags?.includes('starred') || false, // Add starred property for consistency
         }));
         
@@ -2720,7 +2739,14 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
           focusedContext += `LINK CONTENT:\n`;
           focusedContext += `Title: ${dbMessage.extracted_title || 'Unknown'}\n`;
           focusedContext += `URL: ${replyToMessage.url}\n`;
-          focusedContext += `Full Text Content:\n${dbMessage.extracted_text}\n\n`;
+          
+          // Truncate extracted text to prevent context length issues
+          const maxTextLength = 8000; // Limit to ~2000 tokens
+          const truncatedText = dbMessage.extracted_text.length > maxTextLength 
+            ? dbMessage.extracted_text.substring(0, maxTextLength) + '\n\n[Content truncated for length. Full article available in your saved content.]'
+            : dbMessage.extracted_text;
+          
+          focusedContext += `Full Text Content:\n${truncatedText}\n\n`;
         } else if (replyToMessage.linkPreview) {
           // Use link preview data if no database content
           focusedContext += `LINK CONTENT:\n`;
@@ -2742,7 +2768,14 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
           focusedContext += `DOCUMENT CONTENT:\n`;
           focusedContext += `Filename: ${replyToMessage.filename}\n`;
           focusedContext += `Title: ${dbMessage.extracted_title || 'Unknown'}\n`;
-          focusedContext += `Full Text Content:\n${dbMessage.extracted_text}\n\n`;
+          
+          // Truncate extracted text to prevent context length issues
+          const maxTextLength = 8000; // Limit to ~2000 tokens
+          const truncatedText = dbMessage.extracted_text.length > maxTextLength 
+            ? dbMessage.extracted_text.substring(0, maxTextLength) + '\n\n[Content truncated for length. Full document available in your saved content.]'
+            : dbMessage.extracted_text;
+          
+          focusedContext += `Full Text Content:\n${truncatedText}\n\n`;
         } else {
           focusedContext += `DOCUMENT: ${replyToMessage.filename}\nContent: ${replyToMessage.content}\n\n`;
         }
@@ -2796,15 +2829,12 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
 
   useFocusEffect(
     useCallback(() => {
-      console.log('🎯 Screen focused, checking if messages need to be loaded...');
-      // Only load messages if they haven't been loaded yet
-      if (!hasLoadedMessages) {
-        // Add a small delay to ensure authentication is ready
-        setTimeout(() => {
-          loadMessages();
-        }, 100);
-      }
-    }, [hasLoadedMessages])
+      console.log('🎯 Screen focused, reloading messages...');
+      // Always reload messages when screen is focused to restore original chats
+      setTimeout(() => {
+        loadMessages();
+      }, 100);
+    }, [])
   );
 
   // Test Claude 3.5 Sonnet image analysis

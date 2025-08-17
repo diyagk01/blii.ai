@@ -1,37 +1,32 @@
-// Service URL Configuration
-// Easy switching between deployment platforms
-
-export const DOCLING_SERVICE_URLS = {
-  // Railway (current)
-  railway: 'https://blii-pdf-extraction-production.up.railway.app',
+// Service URLs configuration
+export const SERVICE_URLS = {
+  // Development (local)
+  development: {
+    docling: 'http://localhost:8080',
+    enhanced: 'https://blii-pdf-extraction-production.up.railway.app'
+  },
   
-  // Render (recommended alternative)
-  render: 'https://srv-d2daqq3e5dus73fpn3l0.onrender.com',
-  
-  // Heroku
-  heroku: 'https://blii-docling-service.herokuapp.com',
-  
-  // DigitalOcean
-  digitalocean: 'https://blii-docling-service-xxx.ondigitalocean.app',
-  
-  // Fly.io
-  fly: 'https://blii-docling-service.fly.dev',
-  
-  // Google Cloud Run
-  cloudrun: 'https://blii-docling-service-xxx.a.run.app',
-  
-  // Local development
-  local: 'http://localhost:8080'
+  // Production (Render)
+  production: {
+    docling: 'https://blii-docling-service.onrender.com',
+    enhanced: 'https://blii-pdf-extraction-production.up.railway.app'
+  }
 };
 
-// Change this to switch platforms easily
-export const ACTIVE_DOCLING_SERVICE = DOCLING_SERVICE_URLS.render;
+// Get the current environment
+const getEnvironment = (): 'development' | 'production' => {
+  // In React Native, we can detect if we're in development or production
+  if (__DEV__) {
+    return 'development';
+  }
+  return 'production';
+};
 
-// Fallback URLs for redundancy
-export const FALLBACK_DOCLING_SERVICES = [
-  DOCLING_SERVICE_URLS.render,
-  DOCLING_SERVICE_URLS.heroku,
-  DOCLING_SERVICE_URLS.railway
-];
+// Export the current service URLs
+export const getServiceUrls = () => {
+  return SERVICE_URLS[getEnvironment()];
+};
 
-export default ACTIVE_DOCLING_SERVICE;
+// Export individual service URLs for convenience
+export const getDoclingUrl = () => getServiceUrls().docling;
+export const getEnhancedUrl = () => getServiceUrls().enhanced;

@@ -73,9 +73,7 @@ export class EnhancedContentExtractor {
       
       // Check if this is a local file path
       if (filePath.startsWith('file://')) {
-        console.log('📱 Detected local file path, using PDFKit for better performance');
-        // For local files, we'll let the fallback chain handle it with PDFKit
-        // This avoids the complexity of file uploads and network issues
+        console.log('📱 Detected local file path, using Docling service');
       }
       
       // Try Docling service first
@@ -193,7 +191,6 @@ export class EnhancedContentExtractor {
         content: result.content,
         full_text: result.content,
         summary: this.generateSummaryFromContent(result.content),
-        preview_image: result.preview_image,
         metadata: {
           fileType: 'pdf',
           fileName,
@@ -248,7 +245,6 @@ export class EnhancedContentExtractor {
         content: result.content,
         full_text: result.content,
         summary: this.generateSummaryFromContent(result.content),
-        preview_image: result.preview_image, // Include the preview image from Docling service
         metadata: {
           fileType: 'pdf',
           fileName,
@@ -334,7 +330,7 @@ This PDF document has been uploaded successfully.
 - Ask questions about it (though detailed content analysis may be limited)
 - Download or view it using the file link
 
-📋 The document is safely stored in your Blii saves and will be processed for content extraction when the enhanced extraction service becomes available.`;
+📋 The document is safely stored in your Blii saves and will be processed for content extraction using the Docling service.`;
 
     return {
       title,
