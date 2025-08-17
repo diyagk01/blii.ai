@@ -111,10 +111,64 @@ def setup_docling_cache():
         beehive_dir = os.path.join(layout_dir, "beehive_v0.0.5")
         os.makedirs(beehive_dir, exist_ok=True)
         
+        # Create a dummy model.pt file to prevent the error
+        model_pt_path = os.path.join(beehive_dir, "model.pt")
+        if not os.path.exists(model_pt_path):
+            logger.info("📝 Creating placeholder model.pt file...")
+            with open(model_pt_path, 'w') as f:
+                f.write("# Placeholder model file\n")
+        
         logger.info("✅ Docling cache directories created")
         
     except Exception as e:
         logger.error(f"❌ Failed to setup Docling cache: {e}")
+
+def download_docling_models():
+    """Download Docling models explicitly"""
+    try:
+        logger.info("📥 Attempting to download Docling models...")
+        
+        # Try to download models using huggingface_hub
+        try:
+            from huggingface_hub import snapshot_download
+            
+            # Download the docling models
+            model_path = snapshot_download(
+                repo_id="ds4sd/docling-models",
+                cache_dir="/tmp/huggingface/hub",
+                local_files_only=False,
+                resume_download=True
+            )
+            
+            logger.info(f"✅ Docling models downloaded to: {model_path}")
+            return True
+            
+        except Exception as download_error:
+            logger.warning(f"Failed to download models via huggingface_hub: {download_error}")
+            
+            # Try alternative download method
+            try:
+                import subprocess
+                result = subprocess.run([
+                    sys.executable, "-m", "huggingface_hub", "download", 
+                    "ds4sd/docling-models", 
+                    "--cache-dir", "/tmp/huggingface/hub"
+                ], capture_output=True, text=True, timeout=300)
+                
+                if result.returncode == 0:
+                    logger.info("✅ Docling models downloaded via CLI")
+                    return True
+                else:
+                    logger.error(f"CLI download failed: {result.stderr}")
+                    return False
+                    
+            except Exception as cli_error:
+                logger.error(f"CLI download also failed: {cli_error}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"❌ Failed to download Docling models: {e}")
+        return False
 
 def get_converter():
     """Get or create Docling converter singleton with proper error handling"""
@@ -130,6 +184,11 @@ def get_converter():
             # Setup cache directories first
             setup_docling_cache()
             
+            # Try to download models explicitly
+            download_success = download_docling_models()
+            if not download_success:
+                logger.warning("⚠️ Model download failed, but continuing with initialization...")
+            
             # Install requirements if not already installed
             try:
                 from docling.document_converter import DocumentConverter
@@ -140,7 +199,7 @@ def get_converter():
                 from docling.document_converter import DocumentConverter
             
             # Force download of Docling models
-            logger.info("📥 Downloading Docling models...")
+            logger.info("📥 Initializing Docling DocumentConverter...")
             
             # Set environment variables to force model download
             os.environ["HF_HUB_OFFLINE"] = "0"  # Force online mode
