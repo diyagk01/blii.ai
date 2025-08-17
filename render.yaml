@@ -1,15 +1,15 @@
 services:
   - type: web
     name: blii-docling-service
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
-    plan: standard
-    env: python3
-    buildCommand: echo "Using Docker build from root"
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --max-requests 100 --max-requests-jitter 10 docling_service:app
+    env: docker
+    plan: starter
+    healthCheckPath: /healthz
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 docling_service.py
     envVars:
+      - key: WEB_CONCURRENCY
+        value: "1"
       - key: PORT
-        value: 8080
+        value: "8080"
       - key: PYTHONUNBUFFERED
-        value: 1
+        value: "1"
