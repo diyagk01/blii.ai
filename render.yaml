@@ -3,9 +3,8 @@ services:
     name: blii-docling-service
     env: docker
     plan: starter
-    healthCheckPath: /healthz
-    buildCommand: pip install -r requirements.txt
-    startCommand: python3 docling_service.py
+    healthCheckPath: /health
+    rootDir: python-services
     envVars:
       - key: WEB_CONCURRENCY
         value: "1"
