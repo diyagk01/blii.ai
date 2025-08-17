@@ -4,7 +4,6 @@ services:
     env: docker
     plan: starter
     healthCheckPath: /health
-    rootDir: python-services
     envVars:
       - key: WEB_CONCURRENCY
         value: "1"
