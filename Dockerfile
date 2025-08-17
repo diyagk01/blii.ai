@@ -8,15 +8,15 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from python-services directory
-COPY python-services/requirements.txt .
+# Copy requirements
+COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code from python-services directory
-COPY python-services/docling_service.py .
-COPY python-services/start.sh .
+# Copy application code
+COPY docling_service.py .
+COPY start.sh .
 
 # Make start script executable
 RUN chmod +x start.sh
