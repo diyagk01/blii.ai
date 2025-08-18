@@ -35,7 +35,7 @@ class OpenAIService {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: process.env.OPENROUTER_API_KEY || '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',
+      apiKey: process.env.OPENROUTER_API_KEY || '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -622,19 +622,21 @@ INSTRUCTIONS:
 - Choose tags that would be meaningful for organizing and finding this content later
 - Use clear, descriptive terms that capture the essence
 - Return ONLY ONE tag - the most relevant one
-- Make it 1-3 words maximum
+- Prepend exactly ONE relevant emoji that represents the tag/topic
+- Format: "EMOJI Space Title Case Tag" (example: "🧠 Machine Learning")
+- Make it 1-3 words maximum (not counting the emoji)
 - Use proper capitalization (Title Case)
-- No explanations, just the single best tag
+- No explanations, just the single best emoji + tag
 
 EXAMPLES:
-- Article about sustainable energy → "Clean Energy"
-- Recipe for pasta → "Italian Cooking" 
-- Tutorial on React → "Web Development"
-- News about AI breakthrough → "Artificial Intelligence"
-- Financial market analysis → "Market Analysis"
-- Travel guide for Japan → "Japan Travel"
-- Workout routine → "Fitness"
-- Product review → "Product Review"`
+- Article about sustainable energy → "🌱 Clean Energy"
+- Recipe for pasta → "🍝 Italian Cooking" 
+- Tutorial on React → "💻 Web Development"
+- News about AI breakthrough → "🧠 Artificial Intelligence"
+- Financial market analysis → "📈 Market Analysis"
+- Travel guide for Japan → "🗺️ Japan Travel"
+- Workout routine → "🏋️ Fitness"
+- Product review → "📝 Product Review"`
           },
           {
             role: 'user',
@@ -652,7 +654,7 @@ EXAMPLES:
 
       // Parse and clean the response - should only be 1 tag
       const cleanedTag = response.trim().replace(/['"]/g, '');
-      return cleanedTag.length > 0 && cleanedTag.length <= 25 ? [cleanedTag] : [];
+      return cleanedTag.length > 0 && cleanedTag.length <= 40 ? [cleanedTag] : [];
     } catch (error) {
       console.error('Error suggesting tags:', error);
       return [];
@@ -678,19 +680,20 @@ ANALYSIS APPROACH:
 
 TAG REQUIREMENTS:
 - Return exactly ONE tag only
-- Make it highly specific and descriptive
-- Use 1-3 words maximum
+- Prepend exactly ONE relevant emoji that represents the tag/topic
+- Format: "EMOJI Space Title Case Tag" (example: "👩‍💻 Programming")
+- Make it 1-3 words maximum (not counting the emoji)
 - Proper Title Case capitalization
 - Must be meaningful for content organization
 - Should help users find this content later
 
 EXAMPLES:
-- Academic paper on neural networks → "Machine Learning"
-- Blog post about startup funding → "Venture Capital" 
-- Tutorial on photography techniques → "Photography Skills"
-- News about climate policy → "Climate Policy"
-- Recipe with cooking instructions → "Cooking Recipes"
-- Investment advice article → "Investment Strategy"`
+- Academic paper on neural networks → "🧠 Machine Learning"
+- Blog post about startup funding → "💰 Venture Capital" 
+- Tutorial on photography techniques → "📷 Photography Skills"
+- News about climate policy → "🌍 Climate Policy"
+- Recipe with cooking instructions → "🍳 Cooking Recipes"
+- Investment advice article → "📈 Investment Strategy"`
           },
           {
             role: 'user',
@@ -734,17 +737,19 @@ ANALYSIS APPROACH:
 
 TAG REQUIREMENTS:
 - Return exactly ${count} tags separated by commas
+- Prepend exactly ONE relevant emoji before each tag
+- Format each as "EMOJI Space Title Case Tag" (example: "🔬 Research")
 - Make each tag highly specific and descriptive
-- Use 1-3 words maximum per tag
+- Use 1-3 words maximum per tag (not counting the emoji)
 - Proper Title Case capitalization
 - Must be meaningful for content organization
 - Should help users find this content later
 - Tags should be different from each other
 
 EXAMPLES:
-- Academic paper on neural networks → "Machine Learning, Research"
-- Blog post about startup funding → "Venture Capital, Business"
-- Tutorial on photography techniques → "Photography, Tutorial"`
+- Academic paper on neural networks → "🧠 Machine Learning, 🔬 Research"
+- Blog post about startup funding → "💰 Venture Capital, 💼 Business"
+- Tutorial on photography techniques → "📷 Photography, 📚 Tutorial"`
           },
           {
             role: 'user',
@@ -763,7 +768,7 @@ EXAMPLES:
       // Parse and clean the response - should be multiple tags separated by commas
       const tags = response.split(',')
         .map(tag => tag.trim().replace(/['"]/g, ''))
-        .filter(tag => tag.length > 0 && tag.length <= 25)
+        .filter(tag => tag.length > 0 && tag.length <= 40)
         .slice(0, count);
       
       return tags;
@@ -1196,6 +1201,117 @@ Build on the conversation, don't start over.\n`;
     
     const lowerQuery = query.toLowerCase();
     return realTimeKeywords.some(keyword => lowerQuery.includes(keyword));
+  }
+
+  // Detect if user is asking to search through their saved content
+  private detectContentSearchQuery(query: string): boolean {
+    const contentSearchKeywords = [
+      'what do i have saved about', 'what have i saved about', 'show me my saves about',
+      'find my content about', 'search my saves for', 'what did i save about',
+      'pull up my content about', 'get my saves about', 'show me what i saved about',
+      'find my saves about', 'search for my content about', 'what content do i have about',
+      'what files do i have about', 'what documents do i have about', 'what articles do i have about',
+      'what links do i have about', 'what images do i have about', 'search my files for',
+      'search my documents for', 'search my articles for', 'search my links for',
+      'find content about', 'find saves about', 'look for my content about'
+    ];
+    
+    const lowerQuery = query.toLowerCase().trim();
+    return contentSearchKeywords.some(keyword => lowerQuery.includes(keyword)) ||
+           // Also detect patterns like "trump" or "goa trip" when asking about saved content
+           /^(what|show|find|search|get|pull)\s+(.*\s+)?(saved?|content|files?|documents?|articles?|links?|images?)\s+(about|on|regarding|for)\s+.+$/i.test(lowerQuery);
+  }
+
+  // Handle content search queries specifically
+  private async handleContentSearchQuery(userMessage: string): Promise<string> {
+    try {
+      console.log('🔍 Handling content search query:', userMessage);
+      
+      // Use ChatService's natural language search
+      const ChatService = await import('./chat');
+      const chatService = ChatService.default.getInstance();
+      
+      const searchResult = await chatService.searchContentWithNaturalLanguage(userMessage);
+      
+      if (searchResult.results.length === 0) {
+        return `I couldn't find any saved content related to "${userMessage}". 
+
+Here are some things you can try:
+• Make sure you've saved content about this topic
+• Try using different keywords (e.g., if searching for "Trump", try "Donald Trump" or "president")
+• Check if the content might be tagged differently
+• Look in your recently deleted items if you might have accidentally deleted it
+
+Would you like me to help you search with different terms?`;
+      }
+
+      // Generate a comprehensive response about the found content
+      let response = `${searchResult.searchSummary}\n\n`;
+      
+      // Group results by type for better presentation
+      const fileResults = searchResult.results.filter(r => r.type === 'file');
+      const linkResults = searchResult.results.filter(r => r.type === 'link');
+      const imageResults = searchResult.results.filter(r => r.type === 'image');
+      const textResults = searchResult.results.filter(r => r.type === 'text');
+      
+      if (fileResults.length > 0) {
+        response += `📄 **Documents:**\n`;
+        fileResults.slice(0, 3).forEach((item, index) => {
+          const title = item.extracted_title || item.filename || 'Untitled Document';
+          const excerpt = item.extracted_excerpt ? ` - ${item.extracted_excerpt.substring(0, 100)}...` : '';
+          response += `${index + 1}. ${title}${excerpt}\n`;
+        });
+        if (fileResults.length > 3) {
+          response += `... and ${fileResults.length - 3} more documents\n`;
+        }
+        response += '\n';
+      }
+      
+      if (linkResults.length > 0) {
+        response += `🔗 **Articles & Links:**\n`;
+        linkResults.slice(0, 3).forEach((item, index) => {
+          const title = item.extracted_title || item.content || 'Untitled Link';
+          const excerpt = item.extracted_excerpt ? ` - ${item.extracted_excerpt.substring(0, 100)}...` : '';
+          response += `${index + 1}. ${title}${excerpt}\n`;
+        });
+        if (linkResults.length > 3) {
+          response += `... and ${linkResults.length - 3} more links\n`;
+        }
+        response += '\n';
+      }
+      
+      if (imageResults.length > 0) {
+        response += `🖼️ **Images:**\n`;
+        imageResults.slice(0, 3).forEach((item, index) => {
+          const title = item.filename || item.content || 'Untitled Image';
+          const description = item.visual_description ? ` - ${item.visual_description.substring(0, 100)}...` : '';
+          response += `${index + 1}. ${title}${description}\n`;
+        });
+        if (imageResults.length > 3) {
+          response += `... and ${imageResults.length - 3} more images\n`;
+        }
+        response += '\n';
+      }
+      
+      if (textResults.length > 0) {
+        response += `💬 **Text Content:**\n`;
+        textResults.slice(0, 2).forEach((item, index) => {
+          const preview = item.content.substring(0, 100) + '...';
+          response += `${index + 1}. ${preview}\n`;
+        });
+        if (textResults.length > 2) {
+          response += `... and ${textResults.length - 2} more text items\n`;
+        }
+        response += '\n';
+      }
+      
+      response += `💡 **Tip:** You can tap on any item to view it in detail, or ask me specific questions about the content!`;
+      
+      return response;
+    } catch (error) {
+      console.error('Error handling content search query:', error);
+      return `I had trouble searching through your content. Please try again or rephrase your query.`;
+    }
   }
 
   // Generate focused response for reply functionality
@@ -2033,6 +2149,14 @@ ${conversationHistory}`
   // Handle new queries with database search and better fallback
   private async handleNewQueryWithFallback(userMessage: string): Promise<string> {
     try {
+      // Check if this is a content search query
+      const isContentSearch = this.detectContentSearchQuery(userMessage);
+      
+      if (isContentSearch) {
+        console.log('🔍 DETECTED CONTENT SEARCH QUERY - Using enhanced search...');
+        return await this.handleContentSearchQuery(userMessage);
+      }
+      
       // Check if the query requires real-time information
       const requiresRealTimeInfo = this.detectRealTimeQuery(userMessage);
       

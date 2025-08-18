@@ -4,24 +4,25 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Easing, Image,
-    KeyboardAvoidingView,
-    Linking,
-    Modal,
-    Platform,
-    SafeAreaView as RNSafeAreaView,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Easing, Image,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
+  Platform,
+  SafeAreaView as RNSafeAreaView,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView as SafeAreaContextView } from 'react-native-safe-area-context';
 import ChatService from '../services/chat';
@@ -101,6 +102,7 @@ interface Message {
   file_type?: string;
   file_size?: number;
   tags?: string[];
+  dbId?: string; // Persisted database UUID for direct updates
 
   // AI Analysis fields
   ai_analysis?: string;
@@ -188,6 +190,10 @@ const ChatScreen = () => {
   const [linkPreviewLoading, setLinkPreviewLoading] = useState(false);
   const [currentLinkPreview, setCurrentLinkPreview] = useState<any>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
+  
+  // Link processing state
+  const [linkProcessing, setLinkProcessing] = useState(false);
+  const [linkProcessingUrl, setLinkProcessingUrl] = useState<string>('');
   
   // Reply preview state
   const [replyPreview, setReplyPreview] = useState<Message | null>(null);
@@ -488,7 +494,7 @@ const ChatScreen = () => {
     }
     
     // Documents & Files
-    if (lowerTag.match(/\b(document|pdf|file|report|spreadsheet|presentation|manual|documentation)\b/)) {
+    if (lowerTag.match(/\b(document|pdf|file|report|spreadsheet|presentation|manual|documentation|transcript|transcription)\b/)) {
       return '📄';
     }
     
@@ -619,7 +625,7 @@ const ChatScreen = () => {
     },
     {
       id: 3,
-      content: "I'll save it and make it easy to find later.",
+      content: "I'll save it and make it easy to find later. You can ask me things like:\n\n• \"What do I have saved about Trump?\"\n• \"Show me my travel documents\"\n• \"Find my content about AI\"",
       type: 'text',
       timestamp: getCurrentTimestamp(),
       isBot: true,
@@ -887,12 +893,19 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     const isReply = replyPreview !== null;
     const originalMessage = inputText;
 
+    // Clear reply preview immediately when send is pressed
+    setReplyPreview(null);
+
     // Detect if message contains links
     const links = detectLinks(inputText.trim());
     
     if (links.length > 0) {
       // Handle as link message - show tag modal like images/files
       const url = links[0]; // Use first link found
+      
+      // Set link processing state
+      setLinkProcessing(true);
+      setLinkProcessingUrl(url);
       
       try {
         // Generate preview first
@@ -1008,6 +1021,10 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
       } catch (error) {
         console.error('Error processing link:', error);
         Alert.alert('Error', 'Failed to process link. Please try again.');
+      } finally {
+        // Always reset link processing state when done
+        setLinkProcessing(false);
+        setLinkProcessingUrl('');
       }
     } else {
       // Handle as regular text message
@@ -1201,6 +1218,7 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
             isBot: false,
             url: asset.uri,
             tags: savedMessage?.tags || [], // Use AI-generated tags from analysis
+            dbId: (savedMessage as any)?.id // carry DB UUID forward when available
           };
           
           setMessages(prev => [...prev, finalMessage]);
@@ -1214,6 +1232,10 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
         } catch (error) {
           console.error('Error uploading image:', error);
           Alert.alert('Error', 'Failed to upload image. Please try again.');
+        } finally {
+          // Always reset uploading state when done
+          setUploading(false);
+          setUploadingFileType('');
         }
               } catch (error) {
           console.error('Error processing image:', error);
@@ -1237,6 +1259,29 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
         setUploadingFileType(isPDF ? 'PDF' : 'document');
         const asset = result.assets[0];
 
+        // Helper to validate AI tags (guards against apologies/refusals)
+        const isInvalidAiTag = (raw: string): boolean => {
+          const s = (raw || '').toLowerCase().trim();
+          if (!s) return true;
+          const badPhrases = [
+            'sorry',
+            "can't",
+            'cannot',
+            'not able',
+            'as an ai',
+            'i am unable',
+            'i cannot',
+            'i can\'t',
+            'no tag',
+            'unable to'
+          ];
+          if (badPhrases.some(p => s.includes(p))) return true;
+          // Remove leading emoji then count words
+          const withoutEmoji = s.replace(/^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]\s*/u, '');
+          const words = withoutEmoji.trim().split(/\s+/).filter(Boolean);
+          return words.length === 0 || words.length > 4;
+        };
+
         // Generate automatic tags for the document
         const newMessage: Partial<Message> = {
           id: generateUniqueId(),
@@ -1248,8 +1293,36 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
           filename: asset.name,
         };
 
-        // Generate automatic tags for document
-        const autoTags = generateTagSuggestions(newMessage);
+        // Generate automatic tags for document using the same AI flow as links
+        // Use filename (without extension) as content to analyze
+        const baseName = (asset.name || '').replace(/\.[^/.]+$/, '');
+        const contentToAnalyzeForFile = baseName.trim();
+        let autoTagsRaw: string[] = [];
+        try {
+          if (contentToAnalyzeForFile) {
+            autoTagsRaw = await openAIService.generateMultipleTagSuggestions(contentToAnalyzeForFile, 3);
+          }
+        } catch (e) {
+          console.warn('AI tag generation for file failed, falling back to local suggestions:', e);
+          autoTagsRaw = generateTagSuggestions(newMessage);
+        }
+        // Filter invalid AI tags, ensure emoji prefix, and provide fallback
+        let autoTags = autoTagsRaw
+          .filter(t => !isInvalidAiTag(t))
+          .map(t => {
+            const trimmed = (t || '').trim();
+            if (!trimmed) return trimmed;
+            const startsWithEmoji = /^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F300}-\u{1F9FF}\u{1F1E0}-\u{1F1FF}]/u.test(trimmed);
+            if (startsWithEmoji) return trimmed;
+            const emoji = getTagEmoji(trimmed);
+            return emoji ? `${emoji} ${trimmed}` : trimmed;
+          });
+        if (autoTags.length === 0) {
+          autoTags = ['🏷️ Document'];
+        }
+
+        // Only attach the primary tag to the message; others will be shown as suggestions in the modal
+        const primaryTagOnly = autoTags.length > 0 ? [autoTags[0]] : [];
         
         // Save document with automatic tags
         try {
@@ -1260,8 +1333,8 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
               fileUrl: asset.uri,
               filename: asset.name,
               fileType: asset.mimeType || 'application/octet-stream',
-              fileSize: asset.size || 0,
-              tags: autoTags
+              fileSize: asset.size || 0
+              // Do not pass tags here; let ChatService derive from extracted content
             }
           );
           
@@ -1276,7 +1349,8 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
             filename: asset.name,
             file_size: asset.size || 0,
             file_type: asset.mimeType || 'application/octet-stream',
-            tags: savedMessage?.tags || autoTags, // Use saved tags or fallback to generated ones
+            tags: savedMessage?.tags || [], // Prefer tags from extracted content
+            dbId: (savedMessage as any)?.id // carry DB UUID forward when available
           };
           
           setMessages(prev => [...prev, finalMessage]);
@@ -1286,7 +1360,7 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
             scrollViewRef.current?.scrollToEnd({ animated: true });
           }, 300);
           
-          console.log('Document uploaded with tags:', savedMessage?.tags || autoTags);
+          console.log('Document uploaded with tags (primary only):', savedMessage?.tags || primaryTagOnly);
         } catch (error) {
           console.error('Error uploading document:', error);
           Alert.alert('Error', 'Failed to upload document. Please try again.');
@@ -1362,8 +1436,8 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     
     try {
       if (message.type === 'link' && message.referencedContent) {
-        // For links, generate multiple AI suggestions to ensure we get variety
-        const contentToAnalyze = `${message.referencedContent.title || ''} ${message.referencedContent.description || ''}`.trim();
+        // Prefer extracted article content when available
+        const contentToAnalyze = `${message.extracted_title || message.referencedContent.title || ''}\n\n${message.extracted_text || message.referencedContent.description || ''}`.trim();
         if (contentToAnalyze) {
           const aiTags = await openAIService.generateMultipleTagSuggestions(contentToAnalyze, 3);
           suggestions.push(...aiTags);
@@ -1371,13 +1445,25 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
         // Add contextual fallback suggestions
         suggestions.push('Innovation', 'Technology', 'Research', 'Digital');
       } else if (message.type === 'image') {
-        // For images, generate contextual suggestions
-        suggestions.push('Photography', 'Visual', 'Creative', 'Media', 'Design', 'Art');
+        // Use any available description/content from analysis
+        const contentToAnalyze = message.content || '';
+        if (contentToAnalyze) {
+          const aiTags = await openAIService.generateMultipleTagSuggestions(contentToAnalyze, 3);
+          suggestions.push(...aiTags);
+        } else {
+          suggestions.push('Photography', 'Visual', 'Creative', 'Media', 'Design', 'Art');
+        }
       } else if (message.type === 'file') {
-        // For files, use existing logic
-        suggestions = generateTagSuggestions(message);
-        // Add additional contextual suggestions
-        suggestions.push('Document', 'Reference', 'Archive', 'Important');
+        // Prefer extracted document content when available
+        const contentToAnalyze = `${message.extracted_title || message.filename || ''}\n\n${message.extracted_text || ''}`.trim();
+        if (contentToAnalyze) {
+          const aiTags = await openAIService.generateMultipleTagSuggestions(contentToAnalyze, 3);
+          suggestions.push(...aiTags);
+        } else {
+          // Fallback to local heuristic
+          suggestions = generateTagSuggestions(message);
+          suggestions.push('Document', 'Reference', 'Archive', 'Important');
+        }
       }
       
       // Remove duplicates and existing tags, limit to exactly 1 additional AI suggestion
@@ -1441,7 +1527,19 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     console.log('✅ Tag added successfully:', tag);
     console.log('📋 Message now has tags:', updatedTags);
     
-    // TODO: Update the message in the database
+    // Update the message in the database
+    try {
+      if ((currentMessageForTagging as any).dbId) {
+        await chatService.updateMessageTags((currentMessageForTagging as any).dbId as string, updatedTags);
+        console.log('✅ Tags saved to database successfully');
+      } else {
+        console.warn('⚠️ No dbId found for message, tags not saved to database');
+      }
+    } catch (error) {
+      console.error('❌ Error saving tags to database:', error);
+      // Don't show an alert here since the UI update succeeded
+    }
+    
     console.log('Added tag to message:', tag);
   };
 
@@ -1530,23 +1628,36 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
         // Update existing message tags in the database
         console.log('🏷️ Updating tags for existing message:', { tags: selectedTags });
         
-        // Find the corresponding database message to get the correct UUID
-        const dbMessages = await chatService.getUserMessages();
-        const dbMessage = dbMessages.find(msg => 
-          msg.content === pendingMessage.content && 
-          msg.type === pendingMessage.type &&
-          msg.file_url === pendingMessage.url
-        );
-
-        if (dbMessage) {
-          await chatService.updateMessageTags(
-            dbMessage.id, // Use the database UUID instead of local ID
-            selectedTags
-          );
+        // If we already have the DB UUID on the message, use it directly
+        if ((pendingMessage as any).dbId) {
+          await chatService.updateMessageTags((pendingMessage as any).dbId as string, selectedTags);
         } else {
-          console.error('❌ Could not find database message for local message:', pendingMessage.id);
-          Alert.alert('Error', 'Could not find the message in the database. Please try again.');
-          return;
+          // Find the corresponding database message to get the correct UUID
+          const dbMessages = await chatService.getUserMessages();
+          // Normalize helper for URIs
+          const normalizeName = (s?: string) => (s || '').split('/').pop()?.split('?')[0] || '';
+          const pendingFileName = normalizeName(pendingMessage.url) || pendingMessage.filename || pendingMessage.content;
+          const dbMessage = dbMessages.find(msg => {
+            const typesMatch = msg.type === pendingMessage.type;
+            const fileUrlName = normalizeName(msg.file_url || undefined);
+            const namesMatch = (
+              (fileUrlName && fileUrlName === normalizeName(pendingMessage.url)) ||
+              (msg.filename && pendingFileName && msg.filename === pendingFileName) ||
+              (msg.content && pendingFileName && msg.content.startsWith(pendingFileName))
+            );
+            return typesMatch && namesMatch;
+          });
+
+          if (dbMessage) {
+            await chatService.updateMessageTags(
+              dbMessage.id, // Use the database UUID instead of local ID
+              selectedTags
+            );
+          } else {
+            console.error('❌ Could not find database message for local message:', pendingMessage.id);
+            Alert.alert('Error', 'Could not find the message in the database. Please try again.');
+            return;
+          }
         }
         
         // Update the message in the UI
@@ -1649,82 +1760,104 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     if (!contextMenuMessage) return;
     
     try {
-      // Create share content based on message type
-      let shareContent = '';
+      console.log('📤 Sharing message:', contextMenuMessage);
+      
+          // Use expo-sharing for better file sharing support
+      
+      let shareOptions = {
+        message: '',
+        title: 'Shared from Blii',
+        url: undefined as string | undefined
+      };
       
       switch (contextMenuMessage.type) {
         case 'text':
-          shareContent = contextMenuMessage.content;
+          shareOptions.message = contextMenuMessage.content;
           break;
+          
         case 'link':
-          shareContent = `${contextMenuMessage.content}\n\n${contextMenuMessage.url}`;
+          if (contextMenuMessage.url) {
+            shareOptions.message = `${contextMenuMessage.content}\n\n${contextMenuMessage.url}`;
+            shareOptions.url = contextMenuMessage.url;
+          } else {
+            shareOptions.message = contextMenuMessage.content;
+          }
           break;
+          
         case 'file':
-          shareContent = `Document: ${contextMenuMessage.filename}`;
+          if (contextMenuMessage.url) {
+            // Share the actual file
+            shareOptions.url = contextMenuMessage.url;
+            shareOptions.message = `Document: ${contextMenuMessage.filename || 'Shared Document'}`;
+          } else {
+            shareOptions.message = `Document: ${contextMenuMessage.filename || 'Shared Document'}`;
+          }
           break;
+          
         case 'image':
-          shareContent = 'Image shared from Blii';
+          if (contextMenuMessage.url) {
+            // Share the actual image
+            shareOptions.url = contextMenuMessage.url;
+            shareOptions.message = 'Image shared from Blii';
+          } else {
+            shareOptions.message = 'Image shared from Blii';
+          }
           break;
       }
       
-      console.log('📤 Sharing content:', shareContent);
+      console.log('📤 Share options:', shareOptions);
       
-      // Try to use React Native's Share API first (works in development builds)
-      try {
-        const { Share } = require('react-native');
-        
-        const result = await Share.share({
-          message: shareContent,
-          title: 'Shared from Blii',
+      // Use expo-sharing for better file support
+      if (shareOptions.url) {
+        // Share file/image with URL
+        await Sharing.shareAsync(shareOptions.url, {
+          mimeType: contextMenuMessage.type === 'image' ? 'image/*' : 'application/*',
+          dialogTitle: shareOptions.message
         });
-        
-        if (result.action === Share.sharedAction) {
-          console.log('📤 Content shared successfully via React Native Share');
-        } else if (result.action === Share.dismissedAction) {
-          console.log('📤 Share dismissed');
-        }
-      } catch (shareError) {
-        console.log('📤 React Native Share not available, falling back to clipboard');
-        
-        // Fallback to clipboard using Expo Clipboard
-        try {
-          const Clipboard = require('expo-clipboard');
-          await Clipboard.setStringAsync(shareContent);
-          
-          Alert.alert(
-            'Content Copied',
-            'The content has been copied to your clipboard. You can now paste it in any app like Messages, Mail, Notes, etc.',
-            [{ text: 'OK' }]
-          );
-          
-          console.log('📤 Content copied to clipboard successfully');
-        } catch (clipboardError) {
-          console.error('Clipboard error:', clipboardError);
-          
-          // Final fallback - show content in alert with copy option
-          Alert.alert(
-            'Share Content',
-            shareContent,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { 
-                text: 'Copy Text', 
-                onPress: () => {
-                  // Manual copy instruction
-                  Alert.alert(
-                    'Copy Manually',
-                    'Please manually copy this text:\n\n' + shareContent,
-                    [{ text: 'OK' }]
-                  );
-                }
-              }
-            ]
-          );
-        }
+      } else {
+        // Share text content
+        const { Share: RNShare } = require('react-native');
+        await RNShare.share({
+          message: shareOptions.message,
+          title: shareOptions.title
+        });
       }
+      
+      console.log('📤 Content shared successfully');
+      
     } catch (error) {
       console.error('Error in share handler:', error);
-      Alert.alert('Error', 'Unable to share content. Please try again.');
+      
+      // Fallback to clipboard
+      try {
+        const Clipboard = require('expo-clipboard');
+        let fallbackContent = '';
+        
+        switch (contextMenuMessage.type) {
+          case 'text':
+            fallbackContent = contextMenuMessage.content;
+            break;
+          case 'link':
+            fallbackContent = `${contextMenuMessage.content}\n\n${contextMenuMessage.url || ''}`;
+            break;
+          case 'file':
+            fallbackContent = `Document: ${contextMenuMessage.filename || 'Shared Document'}`;
+            break;
+          case 'image':
+            fallbackContent = 'Image shared from Blii';
+            break;
+        }
+        
+        await Clipboard.setStringAsync(fallbackContent);
+        Alert.alert(
+          'Content Copied',
+          'The content has been copied to your clipboard. You can now paste it in any app.',
+          [{ text: 'OK' }]
+        );
+      } catch (clipboardError) {
+        console.error('Clipboard error:', clipboardError);
+        Alert.alert('Error', 'Unable to share content. Please try again.');
+      }
     }
     
     setShowContextMenu(false);
@@ -1849,18 +1982,29 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
 
     setDeleting(true);
     try {
-      // Find the corresponding database message by content and type
-      const dbMessages = await chatService.getUserMessages();
-      const dbMessage = dbMessages.find(msg => 
-        msg.content === messageToDelete.content && 
-        msg.type === messageToDelete.type &&
-        msg.file_url === messageToDelete.url
-      );
+      // Use dbId if available, otherwise search for the message
+      if ((messageToDelete as any).dbId) {
+        // Direct delete using stored DB UUID
+        await chatService.deleteMessage((messageToDelete as any).dbId);
+        console.log('Message deleted from database using dbId');
+      } else {
+        // Find the corresponding database message by content and type (fallback)
+        const dbMessages = await chatService.getUserMessages();
+        const dbMessage = dbMessages.find(msg => 
+          msg.content === messageToDelete.content && 
+          msg.type === messageToDelete.type &&
+          msg.file_url === messageToDelete.url
+        );
 
-      if (dbMessage) {
-        // Delete from database (this also deletes the file from storage)
-        await chatService.deleteMessage(dbMessage.id);
-        console.log('Message deleted from database');
+        if (dbMessage) {
+          // Delete from database (this also deletes the file from storage)
+          await chatService.deleteMessage(dbMessage.id);
+          console.log('Message deleted from database using search');
+        } else {
+          console.error('❌ Could not find database message for deletion:', messageToDelete.id);
+          Alert.alert('Error', 'Could not find the message in the database. Please try again.');
+          return;
+        }
       }
 
       // Remove from local state
@@ -2282,6 +2426,9 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
       // Business & Finance
       'business': '📈', 'finance': '💰', 'investment': '📊', 'marketing': '📢',
       'startup': '🚀', 'entrepreneurship': '🚀', 'venture capital': '💰',
+
+      // Social Impact & Nonprofits
+      'nonprofit': '🤝', 'charity': '🎗️', 'ngo': '🤝', 'philanthropy': '🎁',
       
       // Education & Learning
       'education': '🎓', 'learning': '📚', 'tutorial': '📖', 'guide': '📋',
@@ -2316,6 +2463,8 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     if (t.includes('ai') || t.includes('artificial')) return '🤖';
     if (t.includes('tech') || t.includes('software')) return '💻';
     if (t.includes('business') || t.includes('finance')) return '💰';
+    // Social impact and nonprofit related
+    if (t.includes('nonprofit') || t.includes('non-profit') || t.includes('ngo') || t.includes('charity') || t.includes('philanthropy')) return '🤝';
     if (t.includes('health') || t.includes('medical')) return '🩺';
     if (t.includes('education') || t.includes('learn')) return '🎓';
     if (t.includes('news') || t.includes('article')) return '📰';
@@ -2323,7 +2472,8 @@ ${debugResult.messagesWithExtractedText?.map((msg: any) =>
     if (t.includes('food') || t.includes('recipe')) return '🍽️';
     if (t.includes('review') || t.includes('opinion')) return '⭐';
     
-    return '';
+    // Default fallback to ensure every tag gets an emoji
+    return '🏷️';
   };
 
   // Generate smart tag suggestions based on content
@@ -3032,80 +3182,74 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
                 >
                   {/* Show reply preview for user messages that are replies */}
                   {message.replyTo && (
-                    <View style={styles.userReplyPreview}>
-                      {/* Header with "Replying to" */}
-                      <View style={styles.userReplyPreviewHeader}>
-                        <Ionicons name="arrow-undo" size={12} color="#FFFFFF" />
-                        <Text style={styles.userReplyPreviewLabel}>Replying to</Text>
-                      </View>
+                    <View style={styles.userReplyPreviewWrapper}>
+
                       
-                      <View style={styles.userReplyPreviewContainer}>
-                        {/* White bar on the left */}
-                        <View style={styles.userReplyPreviewBar} />
-                        
-                        <View style={styles.userReplyPreviewContent}>
-                          <View style={styles.userReplyPreviewTextContent}>
-                            {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
-                              <>
-                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
-                                  {message.replyTo.linkPreview.title || 'Link'}
-                                </Text>
-                                <Text style={styles.userReplyPreviewDomain}>
-                                  {message.replyTo.linkPreview.domain || 'Link'}
-                                </Text>
-                              </>
-                            ) : message.replyTo.type === 'file' ? (
-                              <>
-                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
-                                  {message.replyTo.filename || 'Document'}
-                                </Text>
-                                <Text style={styles.userReplyPreviewDomain}>
-                                  Document
-                                </Text>
-                              </>
-                            ) : message.replyTo.type === 'image' ? (
-                              <>
-                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
-                                  Image
-                                </Text>
-                                <Text style={styles.userReplyPreviewDomain}>
-                                  Photo
-                                </Text>
-                              </>
-                            ) : (
-                              <>
-                                <Text style={styles.userReplyPreviewTitle} numberOfLines={1}>
-                                  {message.replyTo.content}
-                                </Text>
-                                <Text style={styles.userReplyPreviewDomain}>
-                                  Message
-                                </Text>
-                              </>
-                            )}
-                          </View>
-                          
-                          {/* Image on the right */}
-                          {message.replyTo.type === 'image' && message.replyTo.url && (
-                            <Image 
-                              source={{ uri: message.replyTo.url }} 
-                              style={styles.userReplyPreviewImage}
-                              resizeMode="cover"
-                            />
-                          )}
-                          {message.replyTo.type === 'link' && message.replyTo.linkPreview?.image && (
-                            <Image 
-                              source={{ uri: message.replyTo.linkPreview.image }} 
-                              style={styles.userReplyPreviewImage}
-                              resizeMode="cover"
-                            />
-                          )}
-                          {message.replyTo.type === 'file' && (
-                            <View style={styles.userReplyPreviewFileIcon}>
-                              <Ionicons name="document" size={16} color="#FFFFFF" />
-                            </View>
+                      <TouchableOpacity 
+                        style={styles.fileMessage}
+                        onPress={() => {
+                          if (message.replyTo?.url) {
+                            console.log('Opening referenced content:', message.replyTo.url);
+                            if (message.replyTo.type === 'link') {
+                              Linking.openURL(message.replyTo.url);
+                            }
+                          }
+                        }}
+                      >
+                        {/* Icon container */}
+                        <View style={styles.fileIconContainer}>
+                          {message.replyTo.type === 'file' ? (
+                            <Ionicons name="document" size={24} color="#FF3B30" />
+                          ) : message.replyTo.type === 'image' ? (
+                            <Ionicons name="image" size={24} color="#FF3B30" />
+                          ) : message.replyTo.type === 'link' ? (
+                            <Ionicons name="link" size={24} color="#FF3B30" />
+                          ) : (
+                            <Ionicons name="chatbubble" size={24} color="#FF3B30" />
                           )}
                         </View>
-                      </View>
+                        
+                        {/* Text content */}
+                        <View style={styles.fileInfoContainer}>
+                          {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
+                            <>
+                              <Text style={styles.fileMessageText} numberOfLines={1}>
+                                {message.replyTo.linkPreview.title || 'Link'}
+                              </Text>
+                              <Text style={styles.fileDetailsText}>
+                                {message.replyTo.linkPreview.domain || 'Link'}
+                              </Text>
+                            </>
+                          ) : message.replyTo.type === 'file' ? (
+                            <>
+                              <Text style={styles.fileMessageText} numberOfLines={1}>
+                                {message.replyTo.filename || 'Document'}
+                              </Text>
+                              <Text style={styles.fileDetailsText}>
+                                Document
+                              </Text>
+                            </>
+                          ) : message.replyTo.type === 'image' ? (
+                            <>
+                              <Text style={styles.fileMessageText} numberOfLines={1}>
+                                Image
+                              </Text>
+                              <Text style={styles.fileDetailsText}>
+                                Photo
+                              </Text>
+                            </>
+                          ) : (
+                            <>
+                              <Text style={styles.fileMessageText} numberOfLines={1}>
+                                {message.replyTo.content}
+                              </Text>
+                              <Text style={styles.fileDetailsText}>
+                                Message
+                              </Text>
+                            </>
+                          )}
+                        </View>
+                      </TouchableOpacity>
                     </View>
                   )}
 
@@ -3288,69 +3432,71 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
                   
                   {/* Show the actual content being referenced for replies */}
                   {message.isBot && message.replyTo && (
-                    <View style={styles.referencedContentContainer}>
-                      {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
-                        <View style={styles.linkMessageContainer}>
-                          <TouchableOpacity 
-                            style={styles.linkPreview}
-                            onPress={() => {
-                              if (message.replyTo?.url) {
-                                console.log('Opening link:', message.replyTo.url);
-                                Linking.openURL(message.replyTo.url);
-                              }
-                            }}
-                          >
-                            <Image 
-                              source={message.replyTo.linkPreview.image ? { 
-                                uri: message.replyTo.linkPreview.image,
-                                headers: {
-                                  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
-                                }
-                              } : require('../assets/images/react-logo.png')} 
-                              style={styles.linkPreviewImage}
-                              resizeMode="cover"
-                            />
-                            <View style={styles.linkPreviewContent}>
-                              <Text style={styles.linkPreviewTitle} numberOfLines={4}>
-                                {message.replyTo.linkPreview.title || 'Link'}
-                              </Text>
-                              <Text style={styles.linkPreviewDomain}>
-                                {message.replyTo.linkPreview.domain || 'Link'}
-                              </Text>
-                            </View>
-                          </TouchableOpacity>
-                          
-                          {/* URL below the preview */}
-                          <TouchableOpacity 
-                            onPress={() => {
-                              if (message.replyTo?.url) {
-                                Linking.openURL(message.replyTo.url);
-                              }
-                            }}
-                            style={styles.linkUrlContainer}
-                          >
-                            <Text style={styles.linkUrlText}>
-                              {message.replyTo.url}
+                    <TouchableOpacity 
+                      style={styles.fileMessage}
+                      onPress={() => {
+                        if (message.replyTo?.url) {
+                          console.log('Opening referenced content:', message.replyTo.url);
+                          if (message.replyTo.type === 'link') {
+                            Linking.openURL(message.replyTo.url);
+                          }
+                        }
+                      }}
+                    >
+                      {/* Icon container */}
+                      <View style={styles.fileIconContainer}>
+                        {message.replyTo.type === 'file' ? (
+                          <Ionicons name="document" size={24} color="#FF3B30" />
+                        ) : message.replyTo.type === 'image' ? (
+                          <Ionicons name="image" size={24} color="#FF3B30" />
+                        ) : message.replyTo.type === 'link' ? (
+                          <Ionicons name="link" size={24} color="#FF3B30" />
+                        ) : (
+                          <Ionicons name="chatbubble" size={24} color="#FF3B30" />
+                        )}
+                      </View>
+                      
+                      {/* Text content */}
+                      <View style={styles.fileInfoContainer}>
+                        {message.replyTo.type === 'link' && message.replyTo.linkPreview ? (
+                          <>
+                            <Text style={styles.fileMessageText} numberOfLines={1}>
+                              {message.replyTo.linkPreview.title || 'Link'}
                             </Text>
-                          </TouchableOpacity>
-                        </View>
-                      ) : message.replyTo.type === 'image' && message.replyTo.url ? (
-                        <View style={styles.referencedImageContainer}>
-                          <Image 
-                            source={{ uri: message.replyTo.url }} 
-                            style={styles.referencedImage}
-                            resizeMode="cover"
-                          />
-                        </View>
-                      ) : message.replyTo.type === 'file' ? (
-                        <View style={styles.referencedFileContainer}>
-                          <View style={styles.fileMessage}>
-                            <Text style={styles.fileMessageText}>{message.replyTo.filename}</Text>
-                            <Ionicons name="document" size={20} color="#666" />
-                          </View>
-                        </View>
-                      ) : null}
-                    </View>
+                            <Text style={styles.fileDetailsText}>
+                              {message.replyTo.linkPreview.domain || 'Link'}
+                            </Text>
+                          </>
+                        ) : message.replyTo.type === 'file' ? (
+                          <>
+                            <Text style={styles.fileMessageText} numberOfLines={1}>
+                              {message.replyTo.filename || 'Document'}
+                            </Text>
+                            <Text style={styles.fileDetailsText}>
+                              Document
+                            </Text>
+                          </>
+                        ) : message.replyTo.type === 'image' ? (
+                          <>
+                            <Text style={styles.fileMessageText} numberOfLines={1}>
+                              Image
+                            </Text>
+                            <Text style={styles.fileDetailsText}>
+                              Photo
+                            </Text>
+                          </>
+                        ) : (
+                          <>
+                            <Text style={styles.fileMessageText} numberOfLines={1}>
+                              {message.replyTo.content}
+                            </Text>
+                            <Text style={styles.fileDetailsText}>
+                              Message
+                            </Text>
+                          </>
+                        )}
+                      </View>
+                    </TouchableOpacity>
                   )}
                 </View>
               )}
@@ -3522,91 +3668,95 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
           {/* Reply Preview Inside Input Container */}
           {replyPreview && (
             <View style={styles.replyPreviewContainer}>
-              {/* Header with "Replying to" above everything */}
-              <View style={styles.replyPreviewHeader}>
-                <Ionicons name="arrow-undo" size={14} color="#007AFF" />
-                <Text style={styles.replyPreviewLabel}>Replying to</Text>
-              </View>
+
               
-              <View style={styles.replyPreview}>
-                {/* Blue bar on the left */}
-                <View style={styles.replyPreviewBlueBar} />
-                
-                <TouchableOpacity 
-                  style={styles.replyPreviewContent}
-                  onPress={() => {
-                    // Optional: Handle tap to scroll to original message
-                  }}
-                >
-                  <View style={styles.replyPreviewTextContent}>
-                    {replyPreview.type === 'link' && replyPreview.linkPreview ? (
+{replyPreview.type === 'link' && replyPreview.linkPreview ? (
+                <View style={styles.inputLinkPreview}>
+                  <TouchableOpacity 
+                    style={styles.inputLinkPreviewCardContent}
+                    onPress={() => {
+                      if (replyPreview.url) {
+                        Linking.openURL(replyPreview.url);
+                      }
+                    }}
+                  >
+                    {replyPreview.linkPreview.image && (
+                      <Image 
+                        source={{ uri: replyPreview.linkPreview.image }} 
+                        style={styles.inputLinkPreviewImage}
+                        resizeMode="cover"
+                      />
+                    )}
+                    <View style={styles.inputLinkPreviewContent}>
+                      <Text style={styles.inputLinkPreviewTitle} numberOfLines={2}>
+                        {replyPreview.linkPreview.title}
+                      </Text>
+                      <Text style={styles.inputLinkPreviewDomain}>
+                        {replyPreview.linkPreview.domain}
+                      </Text>
+                    </View>
+                    <TouchableOpacity 
+                      style={styles.inputLinkPreviewClose}
+                      onPress={() => setReplyPreview(null)}
+                    >
+                      <Ionicons name="close" size={16} color="#666" />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.replyPreview}>
+                  {/* Icon container */}
+                  <View style={styles.replyPreviewIconContainer}>
+                    {replyPreview.type === 'file' ? (
+                      <Ionicons name="document" size={24} color="#FF3B30" />
+                    ) : replyPreview.type === 'image' ? (
+                      <Ionicons name="image" size={24} color="#FF3B30" />
+                    ) : (
+                      <Ionicons name="chatbubble" size={24} color="#FF3B30" />
+                    )}
+                  </View>
+                  
+                  {/* Text content */}
+                  <View style={styles.replyPreviewInfoContainer}>
+                    {replyPreview.type === 'file' ? (
                       <>
-                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
-                          {replyPreview.linkPreview.title || 'Link'}
-                        </Text>
-                        <Text style={styles.replyPreviewDomain}>
-                          {replyPreview.linkPreview.domain || 'Link'}
-                        </Text>
-                      </>
-                    ) : replyPreview.type === 'file' ? (
-                      <>
-                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                        <Text style={styles.replyPreviewFileName} numberOfLines={1}>
                           {replyPreview.filename || 'Document'}
                         </Text>
-                        <Text style={styles.replyPreviewDomain}>
+                        <Text style={styles.replyPreviewFileDetails}>
                           Document
                         </Text>
                       </>
                     ) : replyPreview.type === 'image' ? (
                       <>
-                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                        <Text style={styles.replyPreviewFileName} numberOfLines={1}>
                           Image
                         </Text>
-                        <Text style={styles.replyPreviewDomain}>
+                        <Text style={styles.replyPreviewFileDetails}>
                           Photo
                         </Text>
                       </>
                     ) : (
                       <>
-                        <Text style={styles.replyPreviewTitle} numberOfLines={1}>
+                        <Text style={styles.replyPreviewFileName} numberOfLines={1}>
                           {replyPreview.content}
                         </Text>
-                        <Text style={styles.replyPreviewDomain}>
+                        <Text style={styles.replyPreviewFileDetails}>
                           Message
                         </Text>
                       </>
                     )}
                   </View>
                   
-                  {/* Image on the right */}
-                  {replyPreview.type === 'image' && replyPreview.url && (
-                    <Image 
-                      source={{ uri: replyPreview.url }} 
-                      style={styles.replyPreviewImage}
-                      resizeMode="cover"
-                    />
-                  )}
-                  {replyPreview.type === 'link' && replyPreview.linkPreview?.image && (
-                    <Image 
-                      source={{ uri: replyPreview.linkPreview.image }} 
-                      style={styles.replyPreviewImage}
-                      resizeMode="cover"
-                    />
-                  )}
-                  {replyPreview.type === 'file' && (
-                    <View style={styles.replyPreviewFileIcon}>
-                      <Ionicons name="document" size={24} color="#666" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-                
-                <TouchableOpacity 
-                  style={styles.replyPreviewClose}
-                  onPress={() => setReplyPreview(null)}
-                >
-                  <Ionicons name="close" size={16} color="#666" />
-                </TouchableOpacity>
-              </View>
+                  {/* Close button on the right */}
+                  <TouchableOpacity 
+                    style={styles.replyPreviewClose}
+                    onPress={() => setReplyPreview(null)}
+                  >
+                    <Ionicons name="close-circle" size={20} color="#666" />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           )}
           
@@ -3625,9 +3775,21 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
             </View>
           )}
           
+          {/* Link Processing Loading Indicator */}
+          {linkProcessing && (
+            <View style={styles.uploadLoadingContainer}>
+              <View style={styles.uploadLoadingContent}>
+                <ActivityIndicator size="small" color="#007AFF" />
+                <Text style={styles.uploadLoadingText}>
+                  Processing link...
+                </Text>
+              </View>
+            </View>
+          )}
+          
         <View style={styles.inputWrapper}>
           <TouchableOpacity 
-            style={styles.attachmentButton} 
+            style={[styles.attachmentButton, linkProcessing && { opacity: 0.5 }]} 
             onPress={() => {
               Alert.alert(
                 'Add Attachment',
@@ -3639,11 +3801,12 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
                 ]
               );
             }}
+            disabled={linkProcessing}
           >
             <Ionicons name="add" size={24} color="#666" />
           </TouchableOpacity>
           <TextInput
-            style={styles.textInput}
+            style={[styles.textInput, linkProcessing && { opacity: 0.5 }]}
             placeholder="Message"
             placeholderTextColor="#999"
             value={inputText}
@@ -3653,15 +3816,21 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
             }}
             multiline
             maxLength={500}
+            editable={!linkProcessing}
           />
           <TouchableOpacity 
-            style={[styles.sendButton, inputText.trim() && styles.sendButtonActive]}
+            style={[
+              styles.sendButton, 
+              inputText.trim() && !linkProcessing && styles.sendButtonActive,
+              linkProcessing && styles.sendButtonDisabled
+            ]}
             onPress={handleSend}
+            disabled={linkProcessing}
           >
             <Ionicons 
               name="send" 
               size={20} 
-              color={inputText.trim() ? "#007AFF" : "#999"} 
+              color={inputText.trim() && !linkProcessing ? "#007AFF" : "#999"} 
             />
           </TouchableOpacity>
         </View>
@@ -3792,8 +3961,8 @@ Remember: Only use what's provided, be concise but helpful, and stay relevant.`;
                   {selectedTags.map((tag) => (
                     <View key={tag} style={styles.selectedTag}>
                       <Text style={styles.selectedTagText}>{getTagEmoji(tag)} {tag}</Text>
-                      <TouchableOpacity onPress={() => removeTag(tag)} style={styles.removeTagButton}>
-                        <Text style={styles.removeTag}>×</Text>
+                      <TouchableOpacity onPress={() => removeTag(tag)}>
+                        <Ionicons name="close-circle" size={18} color="#A8B0B8" />
                       </TouchableOpacity>
                     </View>
                   ))}
@@ -4148,6 +4317,9 @@ const styles = StyleSheet.create({
   sendButtonActive: {
     backgroundColor: '#e3f2fd',
   },
+  sendButtonDisabled: {
+    opacity: 0.5,
+  },
   tagsContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -4431,21 +4603,10 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   removeTagButton: {
-    padding: 4,
-    marginLeft: 4,
-    borderRadius: 12,
-    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+    // deprecated style retained for compatibility
   },
   removeTag: {
-    fontSize: 18,
-    color: '#666',
-    fontWeight: 'bold',
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    paddingRight: 40,
-    textAlign: 'center',
-    minWidth: 20,
-    minHeight: 20,
+    // deprecated style retained for compatibility
   },
   modalActions: {
     flexDirection: 'row',
@@ -4916,29 +5077,36 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
   },
   replyPreview: {
+    display: 'flex',
     flexDirection: 'row',
-    alignItems: 'stretch',
-    backgroundColor: '#ffffff',
-    shadowColor: '#808080',
-    shadowOffset: {
-      width: 0,
-      height: -4,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 3,
-    overflow: 'hidden',
+    alignItems: 'flex-start',
+    gap: 12,
+    alignSelf: 'stretch',
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: '#DCEAFF',
+    marginTop: 8,
   },
-  replyPreviewBlueBar: {
-    width: 4,
-    backgroundColor: '#007AFF',
-  },
-  replyPreviewContent: {
-    flex: 1,
-    flexDirection: 'row',
+  replyPreviewIconContainer: {
+    justifyContent: 'center',
     alignItems: 'center',
-    padding: 8,
-    paddingLeft: 12,
+  },
+  replyPreviewInfoContainer: {
+    flex: 1,
+    flexDirection: 'column',
+    gap: 6,
+  },
+  replyPreviewFileName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
+  },
+  replyPreviewFileDetails: {
+    fontSize: 14,
+    color: '#666666',
+  },
+  userReplyPreviewWrapper: {
+    marginBottom: 8,
   },
   replyPreviewHeader: {
     flexDirection: 'row',
@@ -4949,7 +5117,7 @@ const styles = StyleSheet.create({
   replyPreviewLabel: {
     fontSize: 13,
     fontWeight: '400',
-    color: '#0065FF',
+    color: '#000000',
     lineHeight: 18,
     letterSpacing: -0.08,
     marginBottom: 4,
@@ -4997,18 +5165,14 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
   },
-  replyPreviewTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1a1a1a',
-    marginBottom: 2,
-    lineHeight: 18,
+  replyPreviewFileName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#000000',
   },
-  replyPreviewDomain: {
-    fontSize: 11,
-    color: '#007AFF',
-    fontWeight: '500',
-    textTransform: 'lowercase',
+  replyPreviewFileDetails: {
+    fontSize: 14,
+    color: '#666666',
   },
   // Bot reply preview styles (for AI responses that are replies)
   botReplyPreview: {
@@ -5099,7 +5263,7 @@ const styles = StyleSheet.create({
   userReplyPreviewLabel: {
     fontSize: 11,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: '#000000',
     lineHeight: 14,
     opacity: 0.9,
   },
@@ -5159,9 +5323,24 @@ const styles = StyleSheet.create({
   // Referenced content styles (for showing actual content in bot replies)
   referencedContentContainer: {
     marginTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#e9ecef',
-    paddingTop: 12,
+    backgroundColor: '#fdfdfd',
+    borderTopLeftRadius: 8,
+    borderTopRightRadius: 8,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    marginLeft: -7,
+    marginRight: -7,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+    padding: 12,
   },
   referencedImageContainer: {
     marginTop: 8,

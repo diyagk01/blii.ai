@@ -20,7 +20,7 @@ class FastImageAnalyzer {
 
   private constructor() {
     this.openai = new OpenAI({
-      apiKey: process.env.OPENROUTER_API_KEY || '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',
+      apiKey: process.env.OPENROUTER_API_KEY || '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',
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
         'HTTP-Referer': 'https://blii.app',
@@ -41,16 +41,21 @@ class FastImageAnalyzer {
     const startTime = Date.now();
     
     try {
-      console.log('⚡ Starting Claude 3.5 Sonnet image analysis:', imageUrl);
+      console.log('⚡ Starting GPT-4o-mini image analysis:', imageUrl);
+      
+      // Validate image URL
+      if (!imageUrl || !imageUrl.startsWith('http')) {
+        throw new Error('Invalid image URL provided');
+      }
       
       // Create a timeout promise
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error('Analysis timeout - taking too long')), 20000); // 20 second timeout
       });
       
-      // Use Claude 3.5 Sonnet with speed optimizations
+      // Use GPT-4o-mini as primary model (more reliable than Claude 3.5 Sonnet)
       const analysisPromise = this.openai.chat.completions.create({
-        model: 'anthropic/claude-3.5-sonnet', // Claude 3.5 Sonnet for better image analysis
+        model: 'gpt-4o-mini', // More reliable model for image analysis
         messages: [
           {
             role: 'user',
@@ -116,11 +121,11 @@ Format as JSON:
       } catch (parseError) {
         console.warn('❌ Failed to parse Claude 3.5 Sonnet response, trying fallback...');
         
-        // Fallback to GPT-4o-mini for speed
+        // Fallback to GPT-3.5-turbo for speed
         try {
-          console.log('🔄 Falling back to GPT-4o-mini for faster analysis...');
+          console.log('🔄 Falling back to GPT-3.5-turbo for faster analysis...');
           const fallbackCompletion = await this.openai.chat.completions.create({
-            model: 'gpt-4o-mini',
+            model: 'gpt-3.5-turbo',
             messages: [
               {
                 role: 'user',
@@ -168,7 +173,7 @@ Format as JSON:
             const jsonMatch = fallbackResponse.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
               analysisData = JSON.parse(jsonMatch[0]);
-              console.log('✅ Fallback to GPT-4o-mini successful');
+              console.log('✅ Fallback to GPT-3.5-turbo successful');
             } else {
               analysisData = this.parseResponseFallback(fallbackResponse);
               console.log('✅ Fallback to manual parsing successful');
@@ -178,7 +183,7 @@ Format as JSON:
           }
         } catch (fallbackError) {
           console.error('❌ Fallback also failed:', fallbackError);
-          throw new Error('Both Claude 3.5 Sonnet and fallback failed');
+          throw new Error('Both GPT-4o-mini and fallback failed');
         }
       }
 
@@ -210,6 +215,15 @@ Format as JSON:
       return result;
     } catch (error) {
       console.error('❌ Fast image analysis failed:', error);
+      
+      // Log more specific error details
+      if (error instanceof Error) {
+        console.error('❌ Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack?.substring(0, 200) + '...'
+        });
+      }
       
       const processingTime = Date.now() - startTime;
       
@@ -462,7 +476,7 @@ Format as JSON:
 
   // Test the analyzer with a sample image
   async testAnalyzer(): Promise<void> {
-    console.log('🧪 Testing Claude 3.5 Sonnet image analyzer...');
+    console.log('🧪 Testing GPT-4o-mini image analyzer...');
     
     try {
       // Test with a sample image
@@ -470,7 +484,7 @@ Format as JSON:
       
       const analysis = await this.analyzeImageFast(testImageUrl);
       
-      console.log('✅ Claude 3.5 Sonnet Analysis Results:');
+      console.log('✅ GPT-4o-mini Analysis Results:');
       console.log('📝 Description:', analysis.description);
       console.log('🏷️ Objects:', analysis.objects);
       console.log('🎨 Colors:', analysis.colors);

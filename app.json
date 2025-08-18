@@ -3,9 +3,12 @@
     "name": "blii",
     "slug": "blii",
     "version": "1.0.0",
+    "description": "Organize, analyze, and chat with your content using AI",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
+    "primaryColor": "#007AFF",
     "scheme": "blii",
+    "platforms": ["ios", "android", "web"],
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
     "ios": {
@@ -16,7 +19,9 @@
         "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to allow you to select and share images with the AI assistant for analysis and conversation.",
         "NSCameraUsageDescription": "This app needs access to your camera to allow you to take photos that can be shared with the AI assistant for analysis and conversation.",
-        "NSMicrophoneUsageDescription": "This app may need access to your microphone for voice-related features."
+        "NSMicrophoneUsageDescription": "This app may need access to your microphone for voice-related features.",
+        "CFBundleDisplayName": "Blii",
+        "CFBundleName": "Blii"
       }
     },
     "android": {
@@ -24,12 +29,25 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.diyagirishkumar.blii"
     },
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "meta": {
+        "og:image": "./assets/images/Custom (1).png",
+        "twitter:image": "./assets/images/Custom (1).png",
+        "og:title": "Blii - Smart Content Management",
+        "og:description": "Organize, analyze, and chat with your content using AI",
+        "twitter:title": "Blii - Smart Content Management",
+        "twitter:description": "Organize, analyze, and chat with your content using AI",
+        "og:type": "website",
+        "og:url": "https://blii.app",
+        "twitter:card": "summary_large_image",
+        "twitter:site": "@blii_app"
+      }
     },
     "plugins": [
       "expo-router",

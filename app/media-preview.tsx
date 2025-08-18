@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import React, { useEffect, useState } from 'react';
 import {
     Alert,
@@ -80,27 +81,69 @@ export default function MediaPreview() {
 
   const handleShare = async () => {
     try {
+      console.log('📤 Sharing item:', { type, url, title, content });
+      
       let shareContent = '';
       let shareTitle = cleanDisplayTitle(title) || 'Shared from Blii';
       
       if (type === 'link' && url) {
         shareContent = `${shareTitle}\n\n${url}`;
-      } else if (type === 'file' && content) {
-        shareContent = `${shareTitle}\n\n${content}`;
-      } else if (type === 'image') {
-        shareContent = shareTitle;
+        // Share the actual link
+        await Share.share({
+          message: shareContent,
+          title: shareTitle,
+          url: url as string,
+        });
+      } else if (type === 'file' && url) {
+        // Share the actual file
+        await Sharing.shareAsync(url as string, {
+          mimeType: 'application/*',
+          dialogTitle: shareTitle
+        });
+      } else if (type === 'image' && url) {
+        // Share the actual image
+        await Sharing.shareAsync(url as string, {
+          mimeType: 'image/*',
+          dialogTitle: shareTitle
+        });
       } else {
+        // Share text content
         shareContent = content || shareTitle;
+        await Share.share({
+          message: shareContent,
+          title: shareTitle,
+        });
       }
-
-      await Share.share({
-        message: shareContent,
-        title: shareTitle,
-        url: type === 'link' ? url as string : undefined,
-      });
+      
+      console.log('📤 Content shared successfully');
     } catch (error) {
       console.error('❌ Error sharing item:', error);
-      Alert.alert('Error', 'Failed to share item. Please try again.');
+      
+      // Fallback to clipboard
+      try {
+        const Clipboard = require('expo-clipboard');
+        let fallbackContent = '';
+        
+        if (type === 'link' && url) {
+          fallbackContent = `${shareTitle}\n\n${url}`;
+        } else if (type === 'file') {
+          fallbackContent = `${shareTitle}\n\n${content || 'Document shared from Blii'}`;
+        } else if (type === 'image') {
+          fallbackContent = 'Image shared from Blii';
+        } else {
+          fallbackContent = content || shareTitle;
+        }
+        
+        await Clipboard.setStringAsync(fallbackContent);
+        Alert.alert(
+          'Content Copied',
+          'The content has been copied to your clipboard. You can now paste it in any app.',
+          [{ text: 'OK' }]
+        );
+      } catch (clipboardError) {
+        console.error('Clipboard error:', clipboardError);
+        Alert.alert('Error', 'Failed to share item. Please try again.');
+      }
     }
   };
 

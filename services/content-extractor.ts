@@ -87,10 +87,12 @@ export class ContentExtractor {
     try {
       console.log('🐍 Calling local Docling Python service for:', fileName);
       
-      // Use deployed Docling service
-      const doclingServiceUrl = 'https://blii-ai.onrender.com';
+      // Use local Docling service for development, deployed service for production
+      const doclingServiceUrl = __DEV__ ? 'http://localhost:8080' : 'https://blii-ai.onrender.com';
       
-      // Check if local Docling service is running
+      console.log(`🔗 Using Docling service at: ${doclingServiceUrl}`);
+      
+      // Check if Docling service is running
       try {
         // Create a timeout controller for React Native compatibility
         const controller = new AbortController();
@@ -105,22 +107,26 @@ export class ContentExtractor {
         clearTimeout(timeoutId);
         
         if (!healthResponse.ok) {
-          throw new Error(`Local Docling service health check failed: ${healthResponse.status}`);
+          throw new Error(`Docling service health check failed: ${healthResponse.status}`);
         }
         
         const healthData = await healthResponse.json();
         if (!healthData.docling_available) {
-          throw new Error('Docling not available in local service');
+          throw new Error(`Docling not available in service: ${healthData.docling_error || 'Unknown error'}`);
         }
         
-        console.log('✅ Local Docling service is healthy and ready');
+        console.log('✅ Docling service is healthy and ready');
       } catch (healthError) {
-        console.error('❌ Local Docling service health check failed:', healthError);
-        console.log('💡 To start the local Docling service manually:');
-        console.log('   1. Open a new terminal');
-        console.log('   2. Navigate to the python-services directory');
-        console.log('   3. Run: source venv/bin/activate && python3 docling_service.py');
-        throw new Error(`Local Docling service unavailable. Please start it manually: ${healthError}`);
+        console.error('❌ Docling service health check failed:', healthError);
+        
+        if (__DEV__) {
+          console.log('💡 To start the local Docling service manually:');
+          console.log('   1. Open a new terminal');
+          console.log('   2. Navigate to the project directory');
+          console.log('   3. Run: python3 docling_service.py');
+        }
+        
+        throw new Error(`Docling service unavailable. Please start it manually: ${healthError}`);
       }
       
       // Call extraction endpoint

@@ -14,6 +14,7 @@ export interface LocalMessage {
   filename?: string;
   tags?: string[];
   starred?: boolean; // Add starred property
+  dbId?: string; // Store database UUID for direct operations
   previewUri?: string; // PDF preview image URI
   linkPreview?: {
     title?: string;
@@ -286,8 +287,8 @@ class ChatService {
       }
     }
     
-    // Default fallback
-    return '';
+    // Default fallback: always return a tag emoji so every tag has one
+    return '🏷️';
   }
 
   private formatTagWithEmoji(tag: string): string {
@@ -1028,6 +1029,7 @@ class ChatService {
       filename: dbMessage.filename,
       tags: dbMessage.tags,
       starred: dbMessage.tags?.includes('starred') || false, // Add starred property
+      dbId: dbMessage.id, // Store the original database UUID for direct operations
       
       // Preserve AI Analysis fields
       ai_analysis: dbMessage.ai_analysis,
@@ -1150,6 +1152,7 @@ class ChatService {
 
     const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     let extractedContent: ExtractedContent | null = null;
+    let tagsFromExtraction: string[] = [];
 
     try {
       // Extract content based on type
@@ -1173,6 +1176,25 @@ class ChatService {
           author: extractedContent.author,
           publish_date: extractedContent.publish_date
         });
+
+        // After successful extraction, try to generate a primary tag from the actual content
+        try {
+          const OpenAIService = await import('./openai');
+          const openAIService = OpenAIService.default.getInstance();
+          const analyzeText = `${extractedContent.title || ''}\n\n${(extractedContent.summary || '').substring(0, 1000)}`.trim() || extractedContent.content.substring(0, 1500);
+          if (analyzeText && analyzeText.length > 0) {
+            const aiTag = await openAIService.generateTagSuggestions(analyzeText); // returns array (1 item)
+            // Validate and format
+            const invalidPhrases = ['sorry', "can't", 'cannot', 'as an ai', 'unable', 'i cannot', "i can't"];
+            const cleaned = (aiTag[0] || '').trim();
+            const isInvalid = cleaned.length === 0 || invalidPhrases.some(p => cleaned.toLowerCase().includes(p));
+            if (!isInvalid) {
+              tagsFromExtraction = [this.formatTagWithEmoji(this.formatTagProperly(cleaned))];
+            }
+          }
+        } catch (tagError) {
+          console.warn('⚠️ Tag generation from extracted content failed:', tagError);
+        }
 
         // Store in temporary storage
         const storedContent = {
@@ -1202,7 +1224,9 @@ class ChatService {
       type,
       user_id: user.id,
       is_bot: options.isBot || false,
-      tags: options.tags || [],
+      tags: (options.tags && options.tags.length > 0)
+        ? options.tags
+        : (tagsFromExtraction.length > 0 ? tagsFromExtraction : ['🏷️ Document']),
       timestamp: new Date().toLocaleTimeString('en-US', { 
         hour12: true, 
         hour: 'numeric', 
@@ -1398,6 +1422,98 @@ class ChatService {
     }
   }
 
+  // Natural language content search - extracts keywords and searches comprehensively
+  async searchContentWithNaturalLanguage(naturalQuery: string): Promise<{
+    results: ChatMessage[];
+    searchSummary: string;
+    keywords: string[];
+  }> {
+    try {
+      console.log('🔍 Natural language search query:', naturalQuery);
+      
+      // Extract keywords from natural language query
+      const keywords = await this.extractSearchKeywords(naturalQuery);
+      console.log('🏷️ Extracted keywords:', keywords);
+      
+      const user = await this.authService.getStoredUser();
+      if (!user) return { results: [], searchSummary: 'User not authenticated', keywords: [] };
+
+      // Use the enhanced database search
+      const results = await this.databaseService.searchMessagesAdvanced(user.id, naturalQuery, keywords);
+      
+      // Generate a summary of what was found
+      const searchSummary = this.generateSearchSummary(results, naturalQuery, keywords);
+      
+      console.log(`✅ Found ${results.length} results for natural language query`);
+      
+      return {
+        results,
+        searchSummary,
+        keywords
+      };
+    } catch (error) {
+      console.error('Error in natural language search:', error);
+      return { results: [], searchSummary: 'Search failed', keywords: [] };
+    }
+  }
+
+  // Extract keywords from natural language queries
+  private async extractSearchKeywords(query: string): Promise<string[]> {
+    try {
+      // Remove common search phrases and extract meaningful keywords
+      const cleanQuery = query
+        .toLowerCase()
+        .replace(/what\s+(do\s+)?i\s+have\s+saved?\s+(about|on|regarding|related\s+to)?/gi, '')
+        .replace(/show\s+me\s+(my\s+)?(saves?\s+)?(about|on|regarding|related\s+to)?/gi, '')
+        .replace(/find\s+(my\s+)?(content|saves?\s+)?(about|on|regarding|related\s+to)?/gi, '')
+        .replace(/search\s+(for\s+)?(my\s+)?(content|saves?\s+)?(about|on|regarding|related\s+to)?/gi, '')
+        .replace(/pull\s+up\s+(my\s+)?(content|saves?\s+)?(about|on|regarding|related\s+to)?/gi, '')
+        .replace(/get\s+(my\s+)?(content|saves?\s+)?(about|on|regarding|related\s+to)?/gi, '')
+        .trim();
+
+      // Split into words and filter out common words
+      const stopWords = ['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could', 'can', 'may', 'might', 'must', 'shall', 'any', 'some', 'all', 'this', 'that', 'these', 'those'];
+      
+      const keywords = cleanQuery
+        .split(/\s+/)
+        .filter(word => word.length > 2 && !stopWords.includes(word))
+        .slice(0, 5); // Limit to 5 keywords to avoid overly complex queries
+
+      return keywords.length > 0 ? keywords : [cleanQuery];
+    } catch (error) {
+      console.error('Error extracting keywords:', error);
+      return [query];
+    }
+  }
+
+  // Generate a summary of search results
+  private generateSearchSummary(results: ChatMessage[], originalQuery: string, keywords: string[]): string {
+    if (results.length === 0) {
+      return `No content found for "${originalQuery}". Try searching with different keywords or check if the content was saved.`;
+    }
+
+    const fileCount = results.filter(r => r.type === 'file').length;
+    const linkCount = results.filter(r => r.type === 'link').length;
+    const imageCount = results.filter(r => r.type === 'image').length;
+    const textCount = results.filter(r => r.type === 'text').length;
+
+    let summary = `Found ${results.length} item${results.length > 1 ? 's' : ''} related to "${originalQuery}": `;
+    
+    const counts = [];
+    if (fileCount > 0) counts.push(`${fileCount} document${fileCount > 1 ? 's' : ''}`);
+    if (linkCount > 0) counts.push(`${linkCount} link${linkCount > 1 ? 's' : ''}`);
+    if (imageCount > 0) counts.push(`${imageCount} image${imageCount > 1 ? 's' : ''}`);
+    if (textCount > 0) counts.push(`${textCount} text item${textCount > 1 ? 's' : ''}`);
+    
+    summary += counts.join(', ');
+    
+    if (keywords.length > 0) {
+      summary += `. Keywords: ${keywords.join(', ')}`;
+    }
+
+    return summary;
+  }
+
   // Extract content from existing messages that don't have extracted content
   async extractContentFromExistingMessages(): Promise<void> {
     try {
@@ -1546,11 +1662,12 @@ class ChatService {
       const user = await this.getCurrentUser();
       
       // Update the message tags in the database
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('chat_messages')
         .update({ tags: tags })
         .eq('id', id)
-        .eq('user_id', user.id);
+        .eq('user_id', user.id)
+        .select(); // Return the updated row for verification
 
       if (error) {
         console.error('❌ Error updating message tags:', error);
@@ -1558,6 +1675,19 @@ class ChatService {
       }
 
       console.log(`✅ Message ${id} tags updated successfully:`, tags);
+      console.log('✅ Updated row verification:', data);
+      
+      // Verify the update by reading the message back
+      const { data: verifyData, error: verifyError } = await supabase
+        .from('chat_messages')
+        .select('tags')
+        .eq('id', id)
+        .eq('user_id', user.id)
+        .single();
+        
+      if (!verifyError && verifyData) {
+        console.log('✅ Verification - tags in database:', verifyData.tags);
+      }
     } catch (error) {
       console.error('❌ Error in updateMessageTags:', error);
       throw error;

@@ -212,14 +212,14 @@ export class DatabaseService {
     }
   }
 
-  // Search functionality
+  // Enhanced search functionality that includes extracted content
   async searchMessages(userId: string, query: string): Promise<ChatMessage[]> {
     try {
       const { data, error } = await supabase
         .from('chat_messages')
         .select('*')
         .eq('user_id', userId)
-        .or(`content.ilike.%${query}%,tags.cs.{${query}}`)
+        .or(`content.ilike.%${query}%,tags.cs.{${query}},extracted_text.ilike.%${query}%,extracted_title.ilike.%${query}%,extracted_author.ilike.%${query}%,extracted_excerpt.ilike.%${query}%,filename.ilike.%${query}%,ai_analysis.ilike.%${query}%,content_insights.ilike.%${query}%,document_summary.ilike.%${query}%`)
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -230,6 +230,41 @@ export class DatabaseService {
       return data || [];
     } catch (error) {
       console.error('Error searching messages:', error);
+      return [];
+    }
+  }
+
+  // Advanced semantic search with keyword extraction
+  async searchMessagesAdvanced(userId: string, query: string, keywords: string[] = []): Promise<ChatMessage[]> {
+    try {
+      // Create search conditions for each keyword
+      const keywordConditions = keywords.length > 0 
+        ? keywords.map(keyword => 
+            `content.ilike.%${keyword}%,extracted_text.ilike.%${keyword}%,extracted_title.ilike.%${keyword}%,extracted_author.ilike.%${keyword}%,extracted_excerpt.ilike.%${keyword}%,filename.ilike.%${keyword}%,ai_analysis.ilike.%${keyword}%,content_insights.ilike.%${keyword}%,document_summary.ilike.%${keyword}%`
+          ).join(',')
+        : '';
+
+      // Combine main query with keyword conditions
+      const searchCondition = keywordConditions 
+        ? `content.ilike.%${query}%,tags.cs.{${query}},extracted_text.ilike.%${query}%,extracted_title.ilike.%${query}%,extracted_author.ilike.%${query}%,extracted_excerpt.ilike.%${query}%,filename.ilike.%${query}%,ai_analysis.ilike.%${query}%,content_insights.ilike.%${query}%,document_summary.ilike.%${query}%,${keywordConditions}`
+        : `content.ilike.%${query}%,tags.cs.{${query}},extracted_text.ilike.%${query}%,extracted_title.ilike.%${query}%,extracted_author.ilike.%${query}%,extracted_excerpt.ilike.%${query}%,filename.ilike.%${query}%,ai_analysis.ilike.%${query}%,content_insights.ilike.%${query}%,document_summary.ilike.%${query}%`;
+
+      const { data, error } = await supabase
+        .from('chat_messages')
+        .select('*')
+        .eq('user_id', userId)
+        .is('deleted_at', null) // Only include non-deleted messages
+        .or(searchCondition)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error in advanced search:', error);
+        return [];
+      }
+
+      return data || [];
+    } catch (error) {
+      console.error('Error in advanced search:', error);
       return [];
     }
   }

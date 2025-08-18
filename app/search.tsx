@@ -2,21 +2,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Image,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Image,
+    SafeAreaView,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import EdgeCaseMessageComponent from '../components/EdgeCaseMessage';
 import ChatService from '../services/chat';
 import EdgeCaseMessagingService, { EdgeCaseAction } from '../services/edge-case-messaging';
 import { cleanDisplayTitle } from '../services/html-utils';
-import OpenAIService from '../services/openai';
 
 const SearchScreen = () => {
   const router = useRouter();
@@ -25,9 +24,9 @@ const SearchScreen = () => {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [smartPrompts, setSmartPrompts] = useState<string[]>([
-    "What have I saved recently?",
-    "Help me organize my content?",
-    "Find connections in my uploads?"
+    "What do I have saved about travel?",
+    "Show me my content about technology",
+    "Find my documents about work projects"
   ]);
   const [loadingPrompts, setLoadingPrompts] = useState(false);
   const edgeCaseService = EdgeCaseMessagingService.getInstance();
@@ -36,9 +35,23 @@ const SearchScreen = () => {
     try {
       setLoadingPrompts(true);
       console.log('🧠 Loading smart prompts for search...');
-      const questions = await OpenAIService.getInstance().generateSmartQuestions(3);
-      setSmartPrompts(questions);
-      console.log('✅ Smart prompts loaded for search:', questions);
+      
+      // Generate content-search specific prompts
+      const searchPrompts = [
+        "What do I have saved about travel?",
+        "Show me my content about technology", 
+        "Find my documents about work projects",
+        "What articles did I save about AI?",
+        "Show me my saved content about health",
+        "Find my files about business"
+      ];
+      
+      // Randomly select 3 prompts
+      const shuffled = searchPrompts.sort(() => 0.5 - Math.random());
+      const selectedPrompts = shuffled.slice(0, 3);
+      
+      setSmartPrompts(selectedPrompts);
+      console.log('✅ Smart search prompts loaded:', selectedPrompts);
     } catch (error) {
       console.error('❌ Error loading smart prompts for search:', error);
       // Keep existing fallback prompts
@@ -58,26 +71,22 @@ const SearchScreen = () => {
     setIsSearching(true);
     setHasSearched(true);
     try {
-      // Get all messages and filter for media items only
-      const allMessages = await ChatService.getInstance().getUserMessages(100);
+      // Use natural language search for comprehensive results
+      const searchResult = await ChatService.getInstance().searchContentWithNaturalLanguage(query);
       
-      // Filter for media items first (images, files, links)
-      let mediaItems = allMessages.filter(msg => {
-        return (msg.type === 'image' && msg.file_url) ||
-               (msg.type === 'file' && msg.file_url) ||
-               (msg.type === 'link' && (msg.file_url || msg.content.includes('http')));
+      console.log('🔍 Search results:', {
+        totalResults: searchResult.results.length,
+        keywords: searchResult.keywords,
+        summary: searchResult.searchSummary
       });
       
-      // Apply text search
-      mediaItems = mediaItems.filter(item => {
-        const searchTerm = query.toLowerCase();
-        const content = (item.content || '').toLowerCase();
-        const filename = (item.filename || '').toLowerCase();
-        const tags = (item.tags || []).join(' ').toLowerCase();
-        
-        return content.includes(searchTerm) || 
-               filename.includes(searchTerm) || 
-               tags.includes(searchTerm);
+      // Filter for displayable items (images, files, links, and text with extracted content)
+      let mediaItems = searchResult.results.filter(msg => {
+        return (msg.type === 'image' && msg.file_url) ||
+               (msg.type === 'file' && msg.file_url) ||
+               (msg.type === 'link' && (msg.file_url || msg.content.includes('http'))) ||
+               // Include text messages that might contain relevant content or references
+               (msg.type === 'text' && (msg.extracted_text || msg.ai_analysis || msg.content_insights));
       });
 
       // Process uploads to create display data (exact same as home page)
@@ -137,6 +146,12 @@ const SearchScreen = () => {
               created_at: msg.created_at,
               tags: msg.tags,
               content: msg.content,
+              // Add extracted content for better search context
+              extracted_title: msg.extracted_title,
+              extracted_excerpt: msg.extracted_excerpt,
+              extracted_author: msg.extracted_author,
+              word_count: msg.word_count,
+              content_category: msg.content_category,
               originalMessage: msg, // Keep original message for edge case detection
               hasEdgeCase: edgeCaseService.hasEdgeCase(msg),
               edgeCase: edgeCaseService.detectEdgeCase(msg) ? edgeCaseService.getEdgeCaseMessage(edgeCaseService.detectEdgeCase(msg)!) : null
@@ -310,7 +325,7 @@ const SearchScreen = () => {
           </TouchableOpacity>
           <TextInput
             style={styles.searchInput}
-            placeholder="Ask AI or Search"
+            placeholder="What do I have saved about..."
             placeholderTextColor="#999"
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -449,6 +464,39 @@ const SearchScreen = () => {
                                 flex: 1
                               }} numberOfLines={2}>{save.title}</Text>
                             </View>
+                            {/* Show excerpt if available */}
+                            {save.extracted_excerpt && (
+                              <Text style={{ 
+                                fontSize: 10, 
+                                color: '#666', 
+                                fontFamily: 'SF Pro', 
+                                lineHeight: 14, 
+                                marginTop: 4
+                              }} numberOfLines={2}>{save.extracted_excerpt}</Text>
+                            )}
+                            {/* Show word count and category if available */}
+                            {(save.word_count || save.content_category) && (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 }}>
+                                {save.word_count && (
+                                  <Text style={{ fontSize: 9, color: '#999', fontFamily: 'SF Pro' }}>
+                                    {save.word_count.toLocaleString()} words
+                                  </Text>
+                                )}
+                                {save.content_category && (
+                                  <Text style={{ 
+                                    fontSize: 9, 
+                                    color: '#007AFF', 
+                                    fontFamily: 'SF Pro',
+                                    backgroundColor: '#F0F8FF',
+                                    paddingHorizontal: 4,
+                                    paddingVertical: 2,
+                                    borderRadius: 4
+                                  }}>
+                                    {save.content_category}
+                                  </Text>
+                                )}
+                              </View>
+                            )}
                           </View>
                         </>
                       )}

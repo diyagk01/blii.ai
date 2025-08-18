@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Linking, Modal, RefreshControl, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -769,31 +770,78 @@ export default function AllSavesScreen() {
   // Share individual item
   const handleShareItem = async (item: any) => {
     try {
+      console.log('📤 Sharing item:', item);
+      
       let shareContent = '';
       let shareTitle = '';
       
-      if (item.type === 'link') {
+      if (item.type === 'link' && item.file_url) {
         shareTitle = cleanDisplayTitle(item.preview_title || item.content) || 'Shared link from Blii';
         shareContent = `${shareTitle}\n\n${item.file_url}`;
-      } else if (item.type === 'file') {
+        // Share the actual link
+        await Share.share({
+          message: shareContent,
+          title: shareTitle,
+          url: item.file_url,
+        });
+      } else if (item.type === 'file' && item.file_url) {
+        // Share the actual file
         shareTitle = cleanDisplayTitle(item.filename || item.content) || 'Shared file from Blii';
-        shareContent = `${shareTitle}\n\nShared from Blii`;
-      } else if (item.type === 'image') {
+        await Sharing.shareAsync(item.file_url, {
+          mimeType: 'application/*',
+          dialogTitle: shareTitle
+        });
+      } else if (item.type === 'image' && item.file_url) {
+        // Share the actual image
         shareTitle = cleanDisplayTitle(item.filename || item.content) || 'Shared image from Blii';
-        shareContent = shareTitle;
+        await Sharing.shareAsync(item.file_url, {
+          mimeType: 'image/*',
+          dialogTitle: shareTitle
+        });
       } else {
+        // Share text content
         shareTitle = 'Shared from Blii';
         shareContent = item.content || shareTitle;
+        await Share.share({
+          message: shareContent,
+          title: shareTitle,
+        });
       }
-
-      await Share.share({
-        message: shareContent,
-        title: shareTitle,
-        url: item.type === 'link' ? item.file_url : undefined,
-      });
+      
+      console.log('📤 Content shared successfully');
     } catch (error) {
       console.error('❌ Error sharing item:', error);
-      Alert.alert('Error', 'Failed to share item. Please try again.');
+      
+      // Fallback to clipboard
+      try {
+        const Clipboard = require('expo-clipboard');
+        let fallbackContent = '';
+        let shareTitle = '';
+        
+        if (item.type === 'link' && item.file_url) {
+          shareTitle = cleanDisplayTitle(item.preview_title || item.content) || 'Shared link from Blii';
+          fallbackContent = `${shareTitle}\n\n${item.file_url}`;
+        } else if (item.type === 'file') {
+          shareTitle = cleanDisplayTitle(item.filename || item.content) || 'Shared file from Blii';
+          fallbackContent = `${shareTitle}\n\nShared from Blii`;
+        } else if (item.type === 'image') {
+          shareTitle = cleanDisplayTitle(item.filename || item.content) || 'Shared image from Blii';
+          fallbackContent = shareTitle;
+        } else {
+          shareTitle = 'Shared from Blii';
+          fallbackContent = item.content || shareTitle;
+        }
+        
+        await Clipboard.setStringAsync(fallbackContent);
+        Alert.alert(
+          'Content Copied',
+          'The content has been copied to your clipboard. You can now paste it in any app.',
+          [{ text: 'OK' }]
+        );
+      } catch (clipboardError) {
+        console.error('Clipboard error:', clipboardError);
+        Alert.alert('Error', 'Failed to share item. Please try again.');
+      }
     }
   };
 
